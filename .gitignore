@@ -1,16 +1,12 @@
 /target
-# The replay collection is personal data and far too large for the repository.
-/My Replays/
+
+# Output directories for runs inside the repository.
 /extracted/
 /trackmaniare-out/
-# Local scratch output (e.g. bench logs captured from a terminal).
-/warn.txt
-# Local working notes and the lockfile stay out of the repository.
-/AUDIT.md
-/FIXES.md
-/Cargo.lock
-# Staged release binaries (e.g. the Windows bench .exe).
+
+# Staged release binaries.
 /dist/
+
 # Build outputs of the WASM bindings and the (future) web frontend.
 /crates/trackmaniare-wasm/pkg/
 /web/node_modules/

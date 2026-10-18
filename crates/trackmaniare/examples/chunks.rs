@@ -4,7 +4,7 @@
 //! Useful when adding support for a chunk that a new game version introduced.
 //!
 //! ```text
-//! cargo run --release --example chunks -- "My Replays/some.Replay.Gbx"
+//! cargo run --release --example chunks -- "replays/some.Replay.Gbx"
 //! ```
 
 use trackmaniare::parse_replay;
