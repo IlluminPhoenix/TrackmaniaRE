@@ -12,10 +12,16 @@ decoded here.
 
 ## AI disclosure
 
-Much of this repository — the extractor, its tests, the WASM bindings and this
-documentation — was written with AI coding assistants under human direction
-and review. Format claims are cross-checked against the GBX.NET reference,
-and behaviour changes land with tests.
+**This project is fully vibecoded, slop if you wish.**
+This project started as a personal curiosity about TM2020's replay format and
+devolved into building a full parser as an easy-to-use utility. All code, docs and
+even the rest of the README were built by an AI agent.
+
+This means:
+
+- Expect bugs / incomplete features (I could only provide the AI with my own replays).
+- **This repo is not actively maintained**, any issues or PRs might be stale before I check back on the repo.
+- **[GBX.NET](https://github.com/BigBang1112/gbx-net) is the most mature library if you want to interact with `.gbx` files.**
 
 ## Build
 
