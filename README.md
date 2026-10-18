@@ -10,6 +10,13 @@ do store a bit-packed, tick-based input stream (100 Hz) in the ghost's
 steering, pedals, RPM, gear, ground contact) in the ghost's record data. Both are
 decoded here.
 
+## AI disclosure
+
+Much of this repository — the extractor, its tests, the WASM bindings and this
+documentation — was written with AI coding assistants under human direction
+and review. Format claims are cross-checked against the GBX.NET reference,
+and behaviour changes land with tests.
+
 ## Build
 
 ```sh
