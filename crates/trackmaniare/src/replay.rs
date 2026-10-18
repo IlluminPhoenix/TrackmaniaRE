@@ -5,6 +5,7 @@ use crate::gbx;
 use crate::ghost;
 use crate::model::{ChunkDisposition, ChunkRecord, Extraction, ReplayInfo};
 use crate::reader::Reader;
+use crate::record;
 
 pub const CLASS_CGAME_CTN_REPLAY_RECORD: u32 = 0x0309_3000;
 
@@ -90,7 +91,7 @@ pub fn parse_replay_record(
                     if index >= 0 && !read_nodes.contains(&(index as usize)) {
                         read_nodes.push(index as usize);
                         let class_id = r.u32()?;
-                        read_referenced_node(r, index as usize, class_id, &mut read_nodes, ex)?;
+                        read_referenced_node(r, index as usize, class_id, ex)?;
                     }
                 }
                 let _ignored2 = r.u32()?;
@@ -104,7 +105,7 @@ pub fn parse_replay_record(
                 if index >= 0 && !read_nodes.contains(&(index as usize)) {
                     read_nodes.push(index as usize);
                     let class_id = r.u32()?;
-                    read_referenced_node(r, index as usize, class_id, &mut read_nodes, ex)?;
+                    read_referenced_node(r, index as usize, class_id, ex)?;
                 }
             }
             0x0309_3018 => guarded(r, ex, size, data_start, &mut info, &|sub, info| {
@@ -117,6 +118,27 @@ pub fn parse_replay_record(
                 let _b = sub.i32()?;
                 Ok(())
             })?,
+            // Combined record data that merge/tooling writes at replay level
+            // (a ghost node would carry its own copy). The node ends with its
+            // own end-of-node marker, so the walk continues after it.
+            record::CLASS_CPLUG_ENT_RECORD_DATA => match record::parse_node(r) {
+                Ok(record) => {
+                    if let Some(last) = ex.chunks.last_mut() {
+                        last.size = Some(r.pos() - data_start);
+                    }
+                    info.record_data = Some(record);
+                }
+                Err(e) => {
+                    if let Some(last) = ex.chunks.last_mut() {
+                        last.disposition = ChunkDisposition::Unknown;
+                    }
+                    ex.warnings.push(format!(
+                        "replay: chunk 0x{:08X} could not be parsed ({e}), replay parsing stopped",
+                        chunk.id
+                    ));
+                    break;
+                }
+            },
             _ => match size {
                 Some(n) => {
                     r.skip(n)?;
@@ -160,7 +182,6 @@ fn read_referenced_node(
     r: &mut Reader<'_>,
     index: usize,
     class_id: u32,
-    read_nodes: &mut Vec<usize>,
     ex: &mut Extraction,
 ) -> Result<()> {
     const GHOST_CLASSES: [u32; 3] = [0x0309_2000, 0x2401_B000, 0x0303_F005];
@@ -215,7 +236,6 @@ fn read_referenced_node(
         size: Some(skipped),
         disposition: ChunkDisposition::Skipped,
     });
-    let _ = read_nodes;
     Ok(())
 }
 
@@ -312,7 +332,7 @@ pub fn parse_xml_attributes(xml: &str) -> Vec<(String, String)> {
     let chars: Vec<char> = xml.chars().collect();
     let mut i = 0;
     while i + 3 < chars.len() {
-        if chars[i] == ' ' && chars[i + 1].is_ascii_alphabetic() {
+        if chars[i].is_ascii_whitespace() && chars[i + 1].is_ascii_alphabetic() {
             let mut j = i + 1;
             while j < chars.len()
                 && (chars[j].is_ascii_alphanumeric() || chars[j] == '_' || chars[j] == '-')
@@ -326,10 +346,9 @@ pub fn parse_xml_attributes(xml: &str) -> Vec<(String, String)> {
                 while k < chars.len() && chars[k] != '"' {
                     if chars[k] == '&' {
                         // Decode the handful of entities the engine emits.
-                        let rest: String = chars[k..].iter().collect();
-                        if let Some(stop) = rest.find(';') {
-                            let entity = &rest[1..stop];
-                            let decoded = match entity {
+                        if let Some(stop) = chars[k + 1..].iter().position(|&c| c == ';') {
+                            let entity: String = chars[k + 1..k + 1 + stop].iter().collect();
+                            let decoded = match entity.as_str() {
                                 "quot" => Some('"'),
                                 "apos" => Some('\''),
                                 "lt" => Some('<'),
@@ -342,7 +361,7 @@ pub fn parse_xml_attributes(xml: &str) -> Vec<(String, String)> {
                             };
                             if let Some(c) = decoded {
                                 value.push(c);
-                                k += stop + 1;
+                                k += stop + 2;
                                 continue;
                             }
                         }

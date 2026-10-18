@@ -72,6 +72,16 @@ pub fn parse_replay_with(data: &[u8], file_name: &str, opts: ExtractOptions) -> 
         warnings: Vec::new(),
         embedded_map: None,
         body: Vec::new(),
+        // Header chunk payloads live in the user-data block, not in the body;
+        // keep them for the raw dump only.
+        header_chunk_data: if opts.keep_body {
+            gbx.header_chunks
+                .iter()
+                .map(|c| (c.id, c.data.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        },
     };
 
     if !gbx.body_complete {
@@ -141,6 +151,14 @@ pub fn parse_replay_with(data: &[u8], file_name: &str, opts: ExtractOptions) -> 
                 .warnings
                 .push(format!("replay parsing stopped early: {e}")),
         }
+    } else if gbx.class_id == ghost::CLASS_CGAME_CTN_GHOST {
+        // A standalone `.Ghost.Gbx` file wraps one ghost node in the body.
+        match ghost::parse_ghost(&mut body, 0, &mut ex) {
+            Ok(g) => ex.ghosts.push(g),
+            Err(e) => ex
+                .warnings
+                .push(format!("ghost parsing stopped early: {e}")),
+        }
     } else {
         ex.warnings.push(format!(
             "unexpected root class 0x{:08X}; only replay records are supported",
@@ -173,6 +191,7 @@ fn merge_replay(dst: &mut model::ReplayInfo, src: model::ReplayInfo) {
     dst.author_zone = dst.author_zone.clone().or(src.author_zone);
     dst.author_extra_info = dst.author_extra_info.clone().or(src.author_extra_info);
     dst.community_xml = dst.community_xml.clone().or(src.community_xml);
+    dst.record_data = dst.record_data.take().or(src.record_data);
     if dst.xml_attributes.is_empty() {
         dst.xml_attributes = src.xml_attributes;
     }

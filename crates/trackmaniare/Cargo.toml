@@ -1,0 +1,19 @@
+[package]
+name = "TrackmaniaRE"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "trackmaniare"
+path = "src/lib.rs"
+
+[[bin]]
+name = "TrackmaniaRE"
+path = "src/main.rs"
+
+[[bin]]
+name = "trackmaniare-bench"
+path = "src/bin/trackmaniare-bench.rs"
+
+[dependencies]
+miniz_oxide = "0.9"

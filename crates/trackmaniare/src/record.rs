@@ -57,6 +57,27 @@ pub struct NoticeRecord {
     pub class_id: Option<u32>,
 }
 
+impl RecordData {
+    /// Number of decoded car states (vehicle records only; the record data
+    /// also carries item and object tracks, which are counted separately).
+    pub fn vehicle_sample_count(&self) -> usize {
+        self.lists
+            .iter()
+            .filter(|l| l.class_id == Some(CLASS_CSCENE_VEHICLE_VIS))
+            .map(|l| l.samples.len())
+            .sum()
+    }
+
+    /// Number of samples of every other entity type in the record data.
+    pub fn other_sample_count(&self) -> usize {
+        self.lists
+            .iter()
+            .filter(|l| l.class_id != Some(CLASS_CSCENE_VEHICLE_VIS))
+            .map(|l| l.samples.len())
+            .sum()
+    }
+}
+
 /// Reads a `CPlugEntRecordData` node (chunks until the end-of-node marker).
 pub fn parse_node(r: &mut Reader<'_>) -> Result<RecordData> {
     let mut record = RecordData::default();
@@ -184,26 +205,31 @@ fn parse_archive(r: &mut Reader<'_>, version: u32, record: &mut RecordData) -> R
         } else {
             let num_samples = r.i32()?;
             let sample_size = r.i32()?;
-            if num_samples > 0 && sample_size >= 0 && num_samples < 10_000_000 && sample_size < 4096
-            {
-                let mut times = Vec::with_capacity(num_samples as usize);
+            // Both factors are attacker-controlled; the product must be bounded
+            // by the bytes actually left, or a few KB of input could ask for a
+            // multi-GB allocation.
+            let needed = num_samples.max(0) as u64 * (4 + sample_size.max(0) as u64);
+            if num_samples > 0 && sample_size >= 0 && needed <= r.remaining() as u64 {
+                let num = num_samples as usize;
+                let size = sample_size as usize;
+                let mut times = Vec::with_capacity(num);
                 for _ in 0..num_samples {
                     times.push(r.i32()?);
                 }
                 // Column-major, delta-encoded per column.
-                let mut buffers = vec![vec![0u8; sample_size as usize]; num_samples as usize];
-                for slot in 0..sample_size as usize {
+                let mut buffers = vec![0u8; num * size];
+                for slot in 0..size {
                     let mut accumulator: u8 = 0;
-                    for b in 0..num_samples as usize {
+                    for b in 0..num {
                         let delta = r.u8()?;
                         accumulator = accumulator.wrapping_add(delta);
-                        buffers[b][slot] = accumulator;
+                        buffers[b * size + slot] = accumulator;
                     }
                 }
                 let mut time = 0i32;
-                for b in 0..num_samples as usize {
-                    time = time.wrapping_add(times[b]);
-                    let data = buffers[b].clone();
+                for (b, &delta) in times.iter().enumerate() {
+                    time = time.wrapping_add(delta);
+                    let data = buffers[b * size..(b + 1) * size].to_vec();
                     let vehicle = class_id.and_then(|_| decode_vehicle_sample(&data));
                     samples.push(Sample {
                         time_ms: time,
@@ -392,50 +418,4 @@ pub fn decode_vehicle_sample(data: &[u8]) -> Option<VehicleSample> {
 /// `uncompressed` bytes.
 pub fn parse_ghost_record_blob(compressed: &[u8], uncompressed: usize) -> Result<Vec<u8>> {
     inflate(compressed, uncompressed)
-}
-
-/// Splits a decompressed legacy ghost blob into per-sample blobs.
-pub fn split_legacy_samples(data: &[u8]) -> Result<Vec<Vec<u8>>> {
-    let mut r = Reader::new(data);
-    let _class_id = r.u32()?;
-    let _skip_list2 = r.u32()?;
-    let _sample_period = r.i32()?;
-    let _u01 = r.u32()?;
-    let sample_data_len = r.u32()? as usize;
-    let sample_data_start = r.pos();
-    r.skip(sample_data_len)?;
-    let num_samples = r.i32()?;
-    let mut first_offset = 0usize;
-    let size_per_sample: i32;
-    let mut sample_sizes: Vec<usize> = Vec::new();
-    if num_samples > 0 {
-        first_offset = r.u32()? as usize;
-        if num_samples > 1 {
-            size_per_sample = r.i32()?;
-            if size_per_sample == -1 {
-                for _ in 0..(num_samples - 1).min(1_000_000) {
-                    sample_sizes.push(r.u32()? as usize);
-                }
-            } else {
-                sample_sizes.push(size_per_sample as usize);
-            }
-        }
-    }
-
-    // Offsets describe every sample but the last, which takes the remainder.
-    let mut out = Vec::new();
-    let mut offset = sample_data_start + first_offset;
-    for i in 0..num_samples.max(0) as usize {
-        let len = if i < sample_sizes.len() {
-            sample_sizes[i]
-        } else {
-            sample_sizes.last().copied().unwrap_or(0)
-        };
-        if offset + len > data.len() {
-            break;
-        }
-        out.push(data[offset..offset + len].to_vec());
-        offset += len;
-    }
-    Ok(out)
 }

@@ -1,8 +1,9 @@
 //! Trackmania 2020 input stream decoding.
 //!
-//! The bit layout follows the reverse engineering documented by the GBX.NET
-//! community: a stream of per-tick deltas, least significant bit first, where
-//! every tick starts with a "nothing changed" flag.
+//! The bit layout follows the GBX.NET reference implementation
+//! (`CGameCtnGhost.PlayerInputData` → `ProcessTrackmaniaInputs`): a stream of
+//! per-tick deltas, least significant bit first, where every tick starts with
+//! a "nothing changed" flag.
 
 use trackmaniare::inputs::{BitReader, Event, PlayerInputData, decode_trackmania_inputs};
 
@@ -86,9 +87,11 @@ fn decodes_vehicle_input_stream() {
         data: w.bytes,
     };
 
-    let (events, truncated) = decode_trackmania_inputs(&data, false);
-    assert!(!truncated, "stream should decode completely");
-    let summary: Vec<(i32, String)> = events
+    let decoded = decode_trackmania_inputs(&data);
+    assert!(decoded.stop.is_none(), "stream should decode completely");
+    assert!(decoded.warnings.is_empty(), "{:?}", decoded.warnings);
+    let summary: Vec<(i32, String)> = decoded
+        .events
         .iter()
         .map(|e| (e.time_ms, format!("{:?}", e.event)))
         .collect();
@@ -104,9 +107,40 @@ fn decodes_vehicle_input_stream() {
         ]
     );
     assert!(
-        events
+        decoded
+            .events
             .iter()
             .any(|e| e.event == Event::Accelerate(true) && e.tick == 0)
+    );
+}
+
+#[test]
+fn extreme_ticks_and_offsets_saturate_instead_of_overflowing() {
+    use trackmaniare::inputs::tick_time_ms;
+    assert_eq!(tick_time_ms(0, i32::MAX), i32::MAX);
+    assert_eq!(tick_time_ms(1, i32::MAX), i32::MAX);
+    assert_eq!(tick_time_ms(u32::MAX, 0), i32::MAX);
+    assert_eq!(tick_time_ms(1, i32::MIN), i32::MIN + 10);
+    assert_eq!(tick_time_ms(1234, 0), 12340);
+}
+
+#[test]
+fn implausible_start_offsets_are_flagged() {
+    use trackmaniare::reader::Reader;
+    let mut bytes = Vec::new();
+    bytes.extend(1u32.to_le_bytes()); // one entry
+    bytes.extend(12u32.to_le_bytes()); // archive version
+    bytes.extend(0u32.to_le_bytes()); // u01
+    bytes.extend(i32::MAX.to_le_bytes()); // start offset
+    bytes.extend(0u32.to_le_bytes()); // ticks
+    bytes.extend(0u32.to_le_bytes()); // data length
+    let mut r = Reader::new(&bytes);
+    let (list, warnings) = trackmaniare::inputs::parse_player_input_data(&mut r, 4).expect("parse");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].start_offset_ms, Some(i32::MAX));
+    assert!(
+        warnings.iter().any(|w| w.contains("start offset")),
+        "{warnings:?}"
     );
 }
 
@@ -118,11 +152,71 @@ fn truncated_stream_is_reported_not_fatal() {
         ticks: 4096,
         data: vec![0x00],
     };
-    let (events, truncated) = decode_trackmania_inputs(&data, false);
-    assert!(truncated);
+    let decoded = decode_trackmania_inputs(&data);
+    assert!(matches!(
+        decoded.stop,
+        Some(trackmaniare::inputs::DecodeStop::OutOfData { .. })
+    ));
     // Every declared tick that could not be read produced no event, and the
     // decoder must not panic.
-    assert!(events.len() <= 4096);
+    assert!(decoded.events.len() <= 4096);
+}
+
+#[test]
+fn unsupported_input_kind_stops_decoding() {
+    let mut w = BitWriter::new();
+    w.push(0, 1); // sameState = false
+    w.push(0, 1); // only2Bit = false
+    w.push(0xC, 34); // states: kind 0xC (float-based steering)
+
+    let data = PlayerInputData {
+        version: 12,
+        start_offset_ms: None,
+        ticks: 4,
+        data: w.bytes,
+    };
+    let decoded = decode_trackmania_inputs(&data);
+    assert!(matches!(
+        decoded.stop,
+        Some(trackmaniare::inputs::DecodeStop::UnsupportedKind { kind: 0xC, .. })
+    ));
+    assert!(
+        decoded.events.is_empty(),
+        "no events from an unsupported kind"
+    );
+}
+
+#[test]
+fn corrupted_strafe_value_stops_decoding() {
+    let mut w = BitWriter::new();
+    w.push(0, 1); // sameState = false
+    w.push(0, 1); // only2Bit = false
+    w.push(1, 34); // states: kind 1 (character)
+    w.push(1, 1); // sameMouse
+    w.push(0, 1); // sameCharacterValue = false
+    w.push(2, 2); // strafe = 2 (corrupted)
+    w.push(0, 2); // walk
+    w.push(0, 2); // vertical
+    w.push(0, 2); // horizontal
+
+    let data = PlayerInputData {
+        version: 12,
+        start_offset_ms: None,
+        ticks: 4,
+        data: w.bytes,
+    };
+    let decoded = decode_trackmania_inputs(&data);
+    assert!(matches!(
+        decoded.stop,
+        Some(trackmaniare::inputs::DecodeStop::CorruptedValue { what: "strafe", .. })
+    ));
+    assert!(
+        !decoded
+            .events
+            .iter()
+            .any(|e| matches!(e.event, Event::Strafe(_))),
+        "corrupted values must not be emitted"
+    );
 }
 
 #[test]
@@ -145,9 +239,9 @@ fn character_stream_uses_two_bit_fields() {
         ticks: 1,
         data: w.bytes,
     };
-    let (events, truncated) = decode_trackmania_inputs(&data, false);
-    assert!(!truncated);
-    let kinds: Vec<&Event> = events.iter().map(|e| &e.event).collect();
+    let decoded = decode_trackmania_inputs(&data);
+    assert!(decoded.stop.is_none());
+    let kinds: Vec<&Event> = decoded.events.iter().map(|e| &e.event).collect();
     assert!(kinds.contains(&&Event::Jump(true)));
     assert!(kinds.contains(&&Event::Strafe(3)));
 }

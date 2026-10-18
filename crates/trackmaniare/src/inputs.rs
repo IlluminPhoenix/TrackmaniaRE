@@ -3,15 +3,26 @@
 //! Two formats are handled:
 //!
 //! * Trackmania 2020 stores a bit-packed, tick-based (100 Hz) player input
-//!   stream in the ghost chunk `0x0309201D`. The bit layout was reverse
-//!   engineered by the GBX.NET community (see
-//!   <https://github.com/BigBang1112/gbx-net/wiki/Extracting-input-data-from-ghosts>);
-//!   this implementation follows that description.
+//!   stream in the ghost chunk `0x0309201D`. The bit layout lives in the
+//!   GBX.NET reference implementation (`CGameCtnGhost.PlayerInputData` →
+//!   `ProcessTrackmaniaInputs`,
+//!   <https://github.com/BigBang1112/gbx-net>); the wiki page linked from its
+//!   repository only documents the input API. This decoder follows the
+//!   reference, including the states it rejects as unsupported or corrupted.
 //! * Older games (TMU / TMNF / TMUF / TM2) store a list of control entries in
 //!   the ghost validation chunks (`0x03092011` / `0x03092019` / `0x03092025`).
 
 use crate::error::Result;
 use crate::reader::Reader;
+
+/// Maximum number of `PlayerInputData` entries read from one chunk. Real
+/// replays contain one per ghost (team replays a handful); the cap keeps a
+/// corrupt count from being taken as an allocation bound.
+const MAX_PLAYER_INPUT_DATA: u32 = 16;
+
+/// Start offsets beyond a day in either direction are treated as implausible
+/// and flagged (they are kept, but timestamps saturate).
+const MAX_START_OFFSET_MS: i32 = 86_400_000;
 
 /// Least-significant-bit-first bit reader, matching the engine's format.
 pub struct BitReader<'a> {
@@ -22,10 +33,6 @@ pub struct BitReader<'a> {
 impl<'a> BitReader<'a> {
     pub fn new(data: &'a [u8]) -> Self {
         BitReader { data, bit_pos: 0 }
-    }
-
-    pub fn bits_left(&self) -> usize {
-        self.data.len() * 8 - self.bit_pos
     }
 
     pub fn read_bit(&mut self) -> Option<bool> {
@@ -62,8 +69,9 @@ impl<'a> BitReader<'a> {
         self.read_bits(16).map(|v| v as u16)
     }
 
-    /// True when every remaining bit is zero (the buffer is expected to be
-    /// zero-padded to a byte boundary).
+    /// True when every bit after the current position is zero. The reference
+    /// implementation expects the buffer to be zero-padded to a byte
+    /// boundary and rejects it otherwise.
     pub fn rest_is_zero(&self) -> bool {
         let mut i = self.bit_pos;
         while i < self.data.len() * 8 {
@@ -88,18 +96,36 @@ pub struct PlayerInputData {
 }
 
 /// Reads the `PlayerInputData` array of ghost chunk `0x0309201D`.
+///
+/// Returns the entries plus any warnings (currently only a declared count that
+/// exceeds [`MAX_PLAYER_INPUT_DATA`]).
 pub fn parse_player_input_data(
     r: &mut Reader<'_>,
     chunk_version: u32,
-) -> Result<Vec<PlayerInputData>> {
+) -> Result<(Vec<PlayerInputData>, Vec<String>)> {
     let count = r.u32()?;
+    let mut warnings = Vec::new();
+    if count > MAX_PLAYER_INPUT_DATA {
+        warnings.push(format!(
+            "input chunk declares {count} PlayerInputData entries; only the first {MAX_PLAYER_INPUT_DATA} are read"
+        ));
+    }
     let mut out = Vec::new();
-    for _ in 0..count.min(16) {
+    for _ in 0..count.min(MAX_PLAYER_INPUT_DATA) {
         let version = r.u32()?;
         let _u01 = r.u32()?;
         let start_offset_ms = if chunk_version >= 4 {
             let v = r.i32()?;
-            if v == -1 { None } else { Some(v) }
+            if v == -1 {
+                None
+            } else {
+                if !(-MAX_START_OFFSET_MS..=MAX_START_OFFSET_MS).contains(&v) {
+                    warnings.push(format!(
+                        "input stream start offset {v} ms is outside +-24 h; timestamps saturate"
+                    ));
+                }
+                Some(v)
+            }
         } else {
             None
         };
@@ -111,11 +137,14 @@ pub fn parse_player_input_data(
             ticks,
             data,
         });
-        if out.len() == 1 && count > 1 {
-            // Some files store the array without a leading count; keep going.
-        }
     }
-    Ok(out)
+    Ok((out, warnings))
+}
+
+/// Milliseconds from the start of the run for a 10 ms tick. Saturates instead
+/// of overflowing on absurd tick counts or start offsets.
+pub fn tick_time_ms(tick: u32, offset: i32) -> i32 {
+    (i64::from(tick) * 10 + i64::from(offset)).clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -155,6 +184,31 @@ pub struct InputEvent {
     pub event: Event,
 }
 
+/// Result of decoding one TM2020 input stream.
+#[derive(Debug, Clone)]
+pub struct InputDecode {
+    /// Every event emitted before decoding stopped.
+    pub events: Vec<InputEvent>,
+    /// `None` when all declared ticks were decoded. Otherwise why and where
+    /// decoding stopped, meaning the trailing ticks carry no data.
+    pub stop: Option<DecodeStop>,
+    /// Non-fatal format violations; the reference implementation throws on
+    /// these, this decoder reports them and keeps the events it decoded.
+    pub warnings: Vec<String>,
+}
+
+/// Why decoding stopped before the declared tick count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeStop {
+    /// The bit stream ran out before the declared tick count.
+    OutOfData { tick: u32 },
+    /// Input kind 0xC/0xD: float-based steering, which neither the reference
+    /// nor this decoder implements.
+    UnsupportedKind { kind: u8, tick: u32 },
+    /// A 2-bit strafe or walk value of 2, which the reference marks corrupted.
+    CorruptedValue { what: &'static str, tick: u32 },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Start {
     NotStarted,
@@ -162,23 +216,24 @@ enum Start {
     Vehicle,
 }
 
-fn get_start(states: u64) -> Start {
+/// Input kind of a full state word. `None` for the unsupported kinds 0xC/0xD.
+fn get_start(states: u64) -> Option<Start> {
     match states & 0xF {
-        0 => Start::NotStarted,
-        2..=4 => Start::Vehicle,
-        _ => Start::Character,
+        0 => Some(Start::NotStarted),
+        2..=4 => Some(Start::Vehicle),
+        0xC | 0xD => None,
+        _ => Some(Start::Character),
     }
 }
 
 /// Decodes a Trackmania 2020 input stream into discrete input events.
 ///
-/// Returns the events plus a flag telling whether the stream ended early
-/// (corrupted input, which happens on runs recorded before 2020-07-20).
-pub fn decode_trackmania_inputs(
-    p: &PlayerInputData,
-    include_unchanged_states: bool,
-) -> (Vec<InputEvent>, bool) {
+/// Events are emitted on change only (the dense per-tick view is derived from
+/// them); respawn bits are emitted whenever set, which is what the reference
+/// does.
+pub fn decode_trackmania_inputs(p: &PlayerInputData) -> InputDecode {
     let mut events = Vec::new();
+    let mut warnings = Vec::new();
     let offset = p.start_offset_ms.unwrap_or(0);
     let mut bits = BitReader::new(&p.data);
 
@@ -188,7 +243,6 @@ pub fn decode_trackmania_inputs(
     let mut prev_steer: Option<i8> = None;
     let mut prev_accel: Option<bool> = None;
     let mut prev_brake: Option<bool> = None;
-    let mut prev_slots: [Option<bool>; 10] = [None; 10];
     let mut prev_mouse: Option<(u16, u16)> = None;
     let mut prev_strafe: Option<u8> = None;
     let mut prev_walk: Option<u8> = None;
@@ -198,10 +252,13 @@ pub fn decode_trackmania_inputs(
     let mut prev_action: Option<bool> = None;
 
     let state_bits = if p.version == 11 { 33 } else { 34 };
+    let mut stop: Option<DecodeStop> = None;
     let mut truncated = false;
+    let mut last_tick = 0u32;
 
     'ticks: for tick in 0..p.ticks {
-        let time_ms = (tick as i32) * 10 + offset;
+        last_tick = tick;
+        let time_ms = tick_time_ms(tick, offset);
         let push = |ev: Event, events: &mut Vec<InputEvent>| {
             events.push(InputEvent {
                 time_ms,
@@ -238,19 +295,19 @@ pub fn decode_trackmania_inputs(
                 match started {
                     Start::Vehicle => {
                         let horn = states & 2 != 0;
-                        if Some(horn) != prev_horn || include_unchanged_states {
+                        if Some(horn) != prev_horn {
                             push(Event::Horn(horn), &mut events);
                             prev_horn = Some(horn);
                         }
                     }
                     Start::Character => {
                         let gun = states & 1 != 0;
-                        if Some(gun) != prev_gun || include_unchanged_states {
+                        if Some(gun) != prev_gun {
                             push(Event::GunTrigger(gun), &mut events);
                             prev_gun = Some(gun);
                         }
                         let action = states & 2 != 0;
-                        if Some(action) != prev_action || include_unchanged_states {
+                        if Some(action) != prev_action {
                             push(Event::Action(action), &mut events);
                             prev_action = Some(action);
                         }
@@ -265,11 +322,18 @@ pub fn decode_trackmania_inputs(
                         break 'ticks;
                     }
                 };
-                started = get_start(states);
+                started = match get_start(states) {
+                    Some(s) => s,
+                    None => {
+                        let kind = (states & 0xF) as u8;
+                        stop = Some(DecodeStop::UnsupportedKind { kind, tick });
+                        break 'ticks;
+                    }
+                };
 
                 if started == Start::Character {
                     let gun = states & (1 << 5) != 0;
-                    if Some(gun) != prev_gun || include_unchanged_states {
+                    if Some(gun) != prev_gun {
                         push(Event::GunTrigger(gun), &mut events);
                         prev_gun = Some(gun);
                     }
@@ -278,13 +342,13 @@ pub fn decode_trackmania_inputs(
                 let horn_or_action = states & (1 << 6) != 0;
                 match started {
                     Start::Vehicle => {
-                        if Some(horn_or_action) != prev_horn || include_unchanged_states {
+                        if Some(horn_or_action) != prev_horn {
                             push(Event::Horn(horn_or_action), &mut events);
                             prev_horn = Some(horn_or_action);
                         }
                     }
                     Start::Character => {
-                        if Some(horn_or_action) != prev_action || include_unchanged_states {
+                        if Some(horn_or_action) != prev_action {
                             push(Event::Action(horn_or_action), &mut events);
                             prev_action = Some(horn_or_action);
                         }
@@ -319,9 +383,6 @@ pub fn decode_trackmania_inputs(
                     push(Event::SecondaryRespawn, &mut events);
                 }
 
-                for i in 0..10 {
-                    prev_slots[i] = Some(states & (1 << (if i < 9 { 14 + i } else { 23 })) != 0);
-                }
                 prev_states = Some(states);
             }
         }
@@ -338,7 +399,7 @@ pub fn decode_trackmania_inputs(
             let y = bits.read_u16();
             match (x, y) {
                 (Some(x), Some(y)) => {
-                    if Some((x, y)) != prev_mouse || include_unchanged_states {
+                    if Some((x, y)) != prev_mouse {
                         push(Event::Mouse(x, y), &mut events);
                         prev_mouse = Some((x, y));
                     }
@@ -368,15 +429,15 @@ pub fn decode_trackmania_inputs(
                                 break 'ticks;
                             }
                         };
-                    if Some(steer) != prev_steer || include_unchanged_states {
+                    if Some(steer) != prev_steer {
                         push(Event::Steer(steer), &mut events);
                         prev_steer = Some(steer);
                     }
-                    if Some(accel) != prev_accel || include_unchanged_states {
+                    if Some(accel) != prev_accel {
                         push(Event::Accelerate(accel), &mut events);
                         prev_accel = Some(accel);
                     }
-                    if Some(brake) != prev_brake || include_unchanged_states {
+                    if Some(brake) != prev_brake {
                         push(Event::Brake(brake), &mut events);
                         prev_brake = Some(brake);
                     }
@@ -405,6 +466,13 @@ pub fn decode_trackmania_inputs(
                             break 'ticks;
                         }
                     };
+                    // The reference rejects these values as corrupted, so the
+                    // rest of the stream cannot be trusted either.
+                    if vals.0 == 2 || vals.1 == 2 {
+                        let what = if vals.0 == 2 { "strafe" } else { "walk" };
+                        stop = Some(DecodeStop::CorruptedValue { what, tick });
+                        break 'ticks;
+                    }
                     if Some(vals.0) != prev_strafe {
                         push(Event::Strafe(vals.0), &mut events);
                         prev_strafe = Some(vals.0);
@@ -427,8 +495,18 @@ pub fn decode_trackmania_inputs(
         }
     }
 
-    let _ = bits.rest_is_zero();
-    (events, truncated)
+    if stop.is_none() && truncated {
+        stop = Some(DecodeStop::OutOfData { tick: last_tick });
+    }
+    if stop.is_none() && !bits.rest_is_zero() {
+        warnings.push("input buffer has non-zero bits after the last tick".to_string());
+    }
+
+    InputDecode {
+        events,
+        stop,
+        warnings,
+    }
 }
 
 fn changed(bit: u32, states: u64, prev: Option<u64>) -> bool {
@@ -458,7 +536,7 @@ pub fn parse_legacy_inputs(r: &mut Reader<'_>) -> Result<(Vec<ControlEntry>, Vec
     let num_inputs = r.i32()?;
     let _count_limit = r.i32()?;
     let mut entries = Vec::new();
-    for _ in 0..num_inputs.max(0).min(4_000_000) {
+    for _ in 0..num_inputs.clamp(0, 4_000_000) {
         let time = r.i32()? - 100000;
         let name_index = r.u8()? as usize;
         let data = r.u32()?;

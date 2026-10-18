@@ -1,8 +1,12 @@
-//! End-to-end parsing against a real Trackmania 2020 replay.
+//! End-to-end parsing against real Trackmania 2020 replays.
 //!
-//! The fixture is a 2.6 second stadium replay; it exercises the container
+//! `tm2020-short` is a 2.6 second stadium replay; it exercises the container
 //! (LZO body, header chunks), the replay record, the ghost node, the TM2020
 //! input stream and the vehicle record data.
+//!
+//! `tm2020-merged-record` is a 7.6 second TAS/preview export whose samples
+//! live in a record data node at replay level (`0x0911F000`) instead of in
+//! the ghost.
 
 use trackmaniare::{model::GhostInputs, parse_replay};
 
@@ -12,6 +16,14 @@ fn fixture() -> Vec<u8> {
         "/tests/fixtures/tm2020-short.Replay.Gbx"
     ))
     .expect("fixture replay")
+}
+
+fn merged_fixture() -> Vec<u8> {
+    std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/tm2020-merged-record.Replay.Gbx"
+    ))
+    .expect("merged-record fixture")
 }
 
 #[test]
@@ -163,7 +175,7 @@ fn input_steer_agrees_with_the_recorded_wheel_state() {
             .iter()
             .filter(|(tt, _)| *tt <= t)
             .map(|(_, v)| *v)
-            .last()
+            .next_back()
     };
 
     let record = ghost.record_data.as_ref().unwrap();
@@ -183,11 +195,61 @@ fn input_steer_agrees_with_the_recorded_wheel_state() {
         compared += 1;
     }
     assert!(compared > 50, "only {compared} samples compared");
-    // The wheel state is filtered, so it tracks rather than equals the input.
+    // The two encoders agree to within one steer quantisation step (measured
+    // worst case on this fixture: 0.003922 = 1/255). A 0.01 bound still leaves
+    // 2.5x headroom while failing on any real steering regression.
     assert!(
-        worst < 0.6,
+        worst < 0.01,
         "worst steer difference {worst} over {compared} samples"
     );
+}
+
+#[test]
+fn speed_agrees_with_distance_between_samples() {
+    // The 20 Hz record data and the position/speed fields share an encoder, so
+    // distance over time must match the recorded speed away from standstill.
+    // Stated tolerances (this fixture: median deviation 0.3%, p90 1.9%,
+    // worst 6.3%; over a 692-replay collection: median 0.2%, p90 2.7%, with
+    // respawn/teleport jumps as the only large outliers).
+    let ex = parse_replay(&fixture(), "fixture", false).unwrap();
+    let ghost = &ex.ghosts[0];
+    let record = ghost.record_data.as_ref().unwrap();
+    let mut ratios = Vec::new();
+    for list in &record.lists {
+        for pair in list.samples.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            let (Some(va), Some(vb)) = (&a.vehicle, &b.vehicle) else {
+                continue;
+            };
+            let dt = (b.time_ms - a.time_ms) as f32 / 1000.0;
+            let speed = (va.speed + vb.speed) / 2.0;
+            // Below 5 m/s quantisation noise dominates the ratio.
+            if dt <= 0.0 || speed < 5.0 {
+                continue;
+            }
+            let dist = va
+                .position
+                .iter()
+                .zip(&vb.position)
+                .map(|(x, y)| (y - x) * (y - x))
+                .sum::<f32>()
+                .sqrt();
+            ratios.push((dist / dt) / speed);
+        }
+    }
+    assert!(
+        ratios.len() > 50,
+        "only {} sample pairs compared",
+        ratios.len()
+    );
+    let mut deviations: Vec<f32> = ratios.iter().map(|r| (r - 1.0).abs()).collect();
+    deviations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = deviations[deviations.len() / 2];
+    let p90 = deviations[deviations.len() * 9 / 10];
+    let worst = *deviations.last().unwrap();
+    assert!(median < 0.05, "median deviation {median}");
+    assert!(p90 < 0.10, "p90 deviation {p90}");
+    assert!(worst < 0.25, "worst deviation {worst}");
 }
 
 #[test]
@@ -202,4 +264,55 @@ fn embedded_map_can_be_extracted() {
 #[test]
 fn rejects_non_gbx_input() {
     assert!(parse_replay(b"not a gbx file at all", "x", false).is_err());
+}
+
+#[test]
+fn replay_level_record_data_is_decoded() {
+    // Merge/preview tooling writes one combined `CPlugEntRecordData` at
+    // replay level. The walk used to stop at that chunk; the samples must be
+    // decoded and the chunks after the node must still be visited.
+    let ex = parse_replay(&merged_fixture(), "fixture", false).unwrap();
+    assert!(
+        ex.warnings.is_empty(),
+        "unexpected warnings: {:?}",
+        ex.warnings
+    );
+    assert!(ex.container.body_complete);
+
+    let record = ex
+        .replay
+        .record_data
+        .as_ref()
+        .expect("replay-level record data");
+    assert_eq!(record.version, 11);
+    assert_eq!(record.end_ms, Some(19540));
+    assert_eq!(record.vehicle_sample_count(), 391);
+    assert_eq!(record.other_sample_count(), 155);
+
+    // The ghost carries a legacy blob, not a modern record: the samples above
+    // are the only decoded car states in the file.
+    assert_eq!(ex.ghosts.len(), 1);
+    assert!(ex.ghosts[0].record_data.is_none());
+    assert_eq!(ex.ghosts[0].sample_count(), 0);
+    assert_eq!(ex.replay.time_ms, Some(7603));
+
+    // The walk continued past the record node's end-of-node marker into the
+    // trailing (skippable) chunks of the replay record.
+    let trailing: Vec<u32> = ex
+        .chunks
+        .iter()
+        .skip_while(|c| c.id != 0x0911_F000)
+        .skip(1)
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(
+        trailing,
+        vec![
+            0x0309_3025,
+            0x0309_3026,
+            0x0309_3027,
+            0x0309_3028,
+            0x0309_3029
+        ]
+    );
 }

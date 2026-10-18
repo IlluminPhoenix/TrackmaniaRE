@@ -124,7 +124,7 @@ impl Gbx {
             let compressed = r.u32()? as usize;
             let available = r.remaining().min(compressed);
             let complete_available = available == compressed;
-            let decoded = lzo::decompress(&r.take(available, "compressed body")?)?;
+            let decoded = lzo::decompress(r.take(available, "compressed body")?)?;
             let complete =
                 decoded.complete && complete_available && decoded.data.len() == uncompressed;
             (decoded.data, uncompressed, complete)
@@ -177,11 +177,21 @@ fn parse_header_chunks(block: &[u8]) -> Result<Vec<HeaderChunk>> {
     Ok(chunks)
 }
 
+/// Reads the folder tree. It is stored as a pre-order sequence: each folder
+/// starts with the number of its children, each child with its name and its
+/// own child count. An explicit worklist is used instead of recursion so that
+/// a crafted file cannot overflow the stack.
 fn read_folders(r: &mut Reader<'_>) -> Result<()> {
-    let num = r.u32()?;
-    for _ in 0..num {
+    let mut pending = vec![r.u32()? as usize];
+    while let Some(count) = pending.last_mut() {
+        if *count == 0 {
+            pending.pop();
+            continue;
+        }
+        *count -= 1;
         let _name = r.string()?;
-        read_folders(r)?;
+        let children = r.u32()? as usize;
+        pending.push(children);
     }
     Ok(())
 }
@@ -238,7 +248,6 @@ pub fn looks_like_chunk_start(r: &Reader<'_>) -> bool {
     if r.remaining() < 4 {
         return false;
     }
-    let save = r.pos();
     let mut probe = r.clone_for_probe();
     let id = match probe.u32() {
         Ok(v) => v,
@@ -253,7 +262,7 @@ pub fn looks_like_chunk_start(r: &Reader<'_>) -> bool {
     if probe.remaining() < 4 {
         return false;
     }
-    matches!(probe.u32(), Ok(marker) if marker == SKIP_MARKER) && r.pos() == save
+    matches!(probe.u32(), Ok(marker) if marker == SKIP_MARKER)
 }
 
 /// Scans forward for the next plausible chunk boundary so that an unknown

@@ -35,7 +35,7 @@ pub struct ChunkRecord {
     pub disposition: ChunkDisposition,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ContainerInfo {
     pub gbx_version: u16,
     pub class_id: u32,
@@ -111,10 +111,13 @@ pub struct ReplayInfo {
     pub author_nickname: Option<String>,
     pub author_zone: Option<String>,
     pub author_extra_info: Option<String>,
+    /// Combined record data written at replay level by merge/tooling instead
+    /// of into a ghost (`CPlugEntRecordData` chunk `0x0911F000`).
+    pub record_data: Option<RecordData>,
 }
 
 impl ReplayInfo {
-    pub fn to_json(&self) -> Json {
+    pub fn to_json(&self, include_timelines: bool) -> Json {
         let mut o = Json::obj();
         o.set("version", Json::opt_int(self.version));
         o.set("map_uid", Json::opt_str(self.map_uid.clone()));
@@ -132,6 +135,13 @@ impl ReplayInfo {
             Json::opt_int(self.embedded_map_size.map(|v| v as i64)),
         );
         o.set("ghost_count", Json::opt_int(self.ghost_count));
+        o.set(
+            "record_data",
+            match &self.record_data {
+                Some(record) => record_data_to_json(record, include_timelines),
+                None => Json::Null,
+            },
+        );
         o.set("author_title", Json::opt_str(self.author_title.clone()));
         o.set("author_login", Json::opt_str(self.author_login.clone()));
         o.set(
@@ -395,32 +405,19 @@ pub struct GhostInfo {
 }
 
 impl GhostInfo {
-    /// Number of decoded car states (vehicle records only; the record data
-    /// also carries item and object tracks, which are counted separately).
+    /// Number of decoded car states in this ghost's record data.
     pub fn sample_count(&self) -> usize {
         self.record_data
             .as_ref()
-            .map(|r| {
-                r.lists
-                    .iter()
-                    .filter(|l| l.class_id == Some(crate::record::CLASS_CSCENE_VEHICLE_VIS))
-                    .map(|l| l.samples.len())
-                    .sum()
-            })
+            .map(|r| r.vehicle_sample_count())
             .unwrap_or(0)
     }
 
-    /// Number of samples of every entity type in the record data.
+    /// Number of samples of every other entity type in the record data.
     pub fn other_sample_count(&self) -> usize {
         self.record_data
             .as_ref()
-            .map(|r| {
-                r.lists
-                    .iter()
-                    .filter(|l| l.class_id != Some(crate::record::CLASS_CSCENE_VEHICLE_VIS))
-                    .map(|l| l.samples.len())
-                    .sum()
-            })
+            .map(|r| r.other_sample_count())
             .unwrap_or(0)
     }
 
@@ -515,50 +512,14 @@ impl GhostInfo {
         );
 
         if let Some(record) = &self.record_data {
-            let mut r = Json::obj();
-            r.set(
-                "vehicle_sample_count",
-                Json::UInt(self.sample_count() as u64),
+            o.set(
+                "record_data",
+                record_data_to_json(record, include_timelines),
             );
-            r.set("version", Json::UInt(record.version as u64));
-            r.set("start_ms", Json::opt_int(record.start_ms));
-            r.set("end_ms", Json::opt_int(record.end_ms));
-            r.set(
-                "descriptors",
-                Json::Arr(
-                    record
-                        .descriptors
-                        .iter()
-                        .map(|d| {
-                            let mut j = Json::obj();
-                            j.set("class_id", Json::str(format!("0x{:08X}", d.class_id)));
-                            j.set("u01", Json::Int(d.u01 as i64));
-                            j.set("u02", Json::Int(d.u02 as i64));
-                            j.set("u03", Json::Int(d.u03 as i64));
-                            j.set("data_len", Json::UInt(d.data_len as u64));
-                            j
-                        })
-                        .collect(),
-                ),
-            );
-            r.set(
-                "lists",
-                Json::Arr(
-                    record
-                        .lists
-                        .iter()
-                        .map(|l| list_to_json(l, include_timelines))
-                        .collect(),
-                ),
-            );
-            o.set("record_data", r);
-        } else if self.legacy_record_blob.is_some() {
+        } else if let Some(blob) = &self.legacy_record_blob {
             let mut r = Json::obj();
             r.set("format", Json::str("legacy-cgameghost"));
-            r.set(
-                "blob_size",
-                Json::UInt(self.legacy_record_blob.as_ref().unwrap().len() as u64),
-            );
+            r.set("blob_size", Json::UInt(blob.len() as u64));
             o.set("record_data", r);
         } else {
             o.set("record_data", Json::Null);
@@ -566,6 +527,48 @@ impl GhostInfo {
 
         o
     }
+}
+
+/// JSON for a decoded record data node; used for ghost records and for the
+/// combined record that merge tooling writes at replay level.
+fn record_data_to_json(record: &RecordData, include_timelines: bool) -> Json {
+    let mut r = Json::obj();
+    r.set(
+        "vehicle_sample_count",
+        Json::UInt(record.vehicle_sample_count() as u64),
+    );
+    r.set("version", Json::UInt(record.version as u64));
+    r.set("start_ms", Json::opt_int(record.start_ms));
+    r.set("end_ms", Json::opt_int(record.end_ms));
+    r.set(
+        "descriptors",
+        Json::Arr(
+            record
+                .descriptors
+                .iter()
+                .map(|d| {
+                    let mut j = Json::obj();
+                    j.set("class_id", Json::str(format!("0x{:08X}", d.class_id)));
+                    j.set("u01", Json::Int(d.u01 as i64));
+                    j.set("u02", Json::Int(d.u02 as i64));
+                    j.set("u03", Json::Int(d.u03 as i64));
+                    j.set("data_len", Json::UInt(d.data_len as u64));
+                    j
+                })
+                .collect(),
+        ),
+    );
+    r.set(
+        "lists",
+        Json::Arr(
+            record
+                .lists
+                .iter()
+                .map(|l| list_to_json(l, include_timelines))
+                .collect(),
+        ),
+    );
+    r
 }
 
 fn list_to_json(l: &EntListElem, include_samples: bool) -> Json {
@@ -615,7 +618,7 @@ pub fn vehicle_to_json(v: &VehicleSample) -> Json {
     o
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Extraction {
     pub file: String,
     pub file_size: u64,
@@ -627,6 +630,10 @@ pub struct Extraction {
     pub embedded_map: Option<Vec<u8>>,
     /// The decompressed body, kept only when raw dumping was requested.
     pub body: Vec<u8>,
+    /// Payloads of the header (user-data) chunks, kept only when raw dumping
+    /// was requested. They do not live in the body, so the chunk dump needs
+    /// them from here.
+    pub header_chunk_data: Vec<(u32, Vec<u8>)>,
 }
 
 impl Extraction {
@@ -635,7 +642,7 @@ impl Extraction {
         o.set("file", Json::str(self.file.clone()));
         o.set("file_size", Json::UInt(self.file_size));
         o.set("container", self.container.to_json());
-        o.set("replay", self.replay.to_json());
+        o.set("replay", self.replay.to_json(include_timelines));
         o.set(
             "ghosts",
             Json::Arr(

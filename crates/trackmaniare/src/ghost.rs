@@ -272,7 +272,12 @@ fn parse_inputs_chunk(
 ) -> Result<Vec<String>> {
     let mut warnings = Vec::new();
     let chunk_version = r.u32()?;
-    let list = inputs::parse_player_input_data(r, chunk_version)?;
+    let (list, parse_warnings) = inputs::parse_player_input_data(r, chunk_version)?;
+    warnings.extend(
+        parse_warnings
+            .into_iter()
+            .map(|w| format!("{node_label}: {w}")),
+    );
     if list.is_empty() {
         warnings.push(format!(
             "{node_label}: chunk 0x0309201D contains no input data"
@@ -280,20 +285,35 @@ fn parse_inputs_chunk(
         return Ok(warnings);
     }
     for p in list {
-        let (events, truncated) = inputs::decode_trackmania_inputs(&p, false);
-        if truncated {
-            warnings.push(format!(
-                "{node_label}: input stream ended early (ticks declared {}, archive version {})",
-                p.ticks, p.version
-            ));
+        let decoded = inputs::decode_trackmania_inputs(&p);
+        if let Some(stop) = decoded.stop {
+            let message = match stop {
+                inputs::DecodeStop::OutOfData { tick } => format!(
+                    "input stream ended early ({tick} of {} ticks stored, archive version {})",
+                    p.ticks, p.version
+                ),
+                inputs::DecodeStop::UnsupportedKind { kind, tick } => format!(
+                    "unsupported input kind 0x{kind:X} (float-based steering is not implemented), stopped at tick {tick}"
+                ),
+                inputs::DecodeStop::CorruptedValue { what, tick } => {
+                    format!("corrupted {what} value 2, stopped at tick {tick}")
+                }
+            };
+            warnings.push(format!("{node_label}: {message}"));
         }
+        warnings.extend(
+            decoded
+                .warnings
+                .iter()
+                .map(|w| format!("{node_label}: {w}")),
+        );
         if info.inputs.is_none() {
             info.inputs = Some(GhostInputs::Trackmania2020 {
                 version: p.version,
                 start_offset_ms: p.start_offset_ms,
                 ticks: p.ticks,
-                truncated,
-                events,
+                truncated: decoded.stop.is_some(),
+                events: decoded.events,
             });
         }
     }

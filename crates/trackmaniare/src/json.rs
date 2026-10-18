@@ -108,28 +108,19 @@ fn write_value(out: &mut String, v: &Json, indent: usize) {
 }
 
 fn fmt_float(f: f64) -> String {
-    if f.is_finite() {
-        // Trim trailing zeros but keep at least one decimal.
-        let s = format!("{f:.6}");
-        let s = s.trim_end_matches('0');
-        let s = s.strip_suffix('.').unwrap_or(s);
-        if s.is_empty() || s == "-0" {
-            "0".to_string()
-        } else {
-            s.to_string()
-        }
+    if !f.is_finite() {
+        // JSON has no NaN/Infinity; emitting the string "NaN" would silently
+        // change the value's type, so write null.
+        return "null".to_string();
+    }
+    // Trim trailing zeros but keep at least one decimal.
+    let s = format!("{f:.6}");
+    let s = s.trim_end_matches('0');
+    let s = s.strip_suffix('.').unwrap_or(s);
+    if s.is_empty() || s == "-0" {
+        "0".to_string()
     } else {
-        // JSON has no NaN/Infinity.
-        format!(
-            "\"{}\"",
-            if f.is_nan() {
-                "NaN"
-            } else if f > 0.0 {
-                "Infinity"
-            } else {
-                "-Infinity"
-            }
-        )
+        s.to_string()
     }
 }
 

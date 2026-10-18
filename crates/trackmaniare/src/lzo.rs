@@ -132,7 +132,13 @@ pub fn decompress(src: &[u8]) -> Result<Decoded> {
             token = src[ip] as usize;
             ip += 1;
             if token < 16 {
-                let hi = if ip < src.len() { src[ip] as usize } else { 0 };
+                if ip >= src.len() {
+                    return Ok(Decoded {
+                        data: out,
+                        complete: false,
+                    });
+                }
+                let hi = src[ip] as usize;
                 let dist = (1 + M2_MAX_OFFSET + (token >> 2) + (hi << 2)) as isize;
                 ip += 1;
                 copy_match!(out.len() as isize - dist, 3);
@@ -227,7 +233,13 @@ pub fn decompress(src: &[u8]) -> Result<Decoded> {
             if token >= 16 {
                 continue;
             }
-            let hi = if ip < src.len() { src[ip] as usize } else { 0 };
+            if ip >= src.len() {
+                return Ok(Decoded {
+                    data: out,
+                    complete: false,
+                });
+            }
+            let hi = src[ip] as usize;
             let dist = (1 + M2_MAX_OFFSET + (token >> 2) + (hi << 2)) as isize;
             ip += 1;
             copy_match!(out.len() as isize - dist, 3);

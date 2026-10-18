@@ -3,14 +3,16 @@
 //! Usage:
 //!   TrackmaniaRE [OPTIONS] <PATH>...
 //!
-//! PATH may be a replay file or a directory (searched for `*.Replay.Gbx`).
+//! PATH may be a replay file, a ghost file, or a directory (searched
+//! non-recursively for `*.Replay.Gbx` / `*.Ghost.Gbx`).
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use trackmaniare::tabular;
-use trackmaniare::{ExtractOptions, json, parse_replay_with};
+use trackmaniare::{ExtractOptions, parse_replay_with};
 
 struct Options {
     paths: Vec<PathBuf>,
@@ -41,7 +43,7 @@ fn main() -> ExitCode {
     };
 
     if opts.paths.is_empty() {
-        println!("{}", usage());
+        eprintln!("{}", usage());
         return ExitCode::FAILURE;
     }
 
@@ -59,19 +61,23 @@ fn main() -> ExitCode {
     files.dedup();
 
     if files.is_empty() {
-        eprintln!("error: no .Replay.Gbx files found");
+        eprintln!("error: no .Replay.Gbx or .Ghost.Gbx files found");
         return ExitCode::FAILURE;
     }
 
-    if let Some(dir) = &opts.out_dir {
-        if let Err(e) = fs::create_dir_all(dir) {
-            eprintln!("error: cannot create {}: {e}", dir.display());
-            return ExitCode::FAILURE;
-        }
+    if let Some(dir) = &opts.out_dir
+        && let Err(e) = fs::create_dir_all(dir)
+    {
+        eprintln!("error: cannot create {}: {e}", dir.display());
+        return ExitCode::FAILURE;
     }
 
+    // Replays with the same file name in different directories would write to
+    // the same outputs, so give every input its own stem up front.
+    let stems = unique_stems(&files);
+
     let mut failures = 0usize;
-    for file in &files {
+    for (file, stem) in files.iter().zip(&stems) {
         let data = match fs::read(file) {
             Ok(d) => d,
             Err(e) => {
@@ -97,7 +103,7 @@ fn main() -> ExitCode {
             Ok(ex) => {
                 match opts.mode {
                     Mode::Summary => {
-                        if files.len() > 1 {
+                        if files.len() > 1 && !opts.quiet {
                             println!("=== {}", file.display());
                         }
                         print!("{}", tabular::summary_text(&ex));
@@ -106,9 +112,14 @@ fn main() -> ExitCode {
                         let value = ex.to_json(opts.timelines);
                         match &opts.out_dir {
                             Some(dir) => {
-                                if let Err(e) =
-                                    write_outputs(dir, &ex, opts.timelines, opts.dense, opts.raw)
-                                {
+                                if let Err(e) = write_outputs(
+                                    dir,
+                                    &ex,
+                                    stem,
+                                    opts.timelines,
+                                    opts.dense,
+                                    opts.raw,
+                                ) {
                                     eprintln!("error: writing outputs for {}: {e}", file.display());
                                     failures += 1;
                                     continue;
@@ -122,7 +133,7 @@ fn main() -> ExitCode {
                         match &opts.out_dir {
                             Some(dir) => {
                                 if let Err(e) = write_file(
-                                    &dir.join(format!("{name}.json")),
+                                    &dir.join(format!("{stem}.json")),
                                     &value.to_pretty(),
                                 ) {
                                     eprintln!("error: {e}");
@@ -151,18 +162,41 @@ fn main() -> ExitCode {
     }
 }
 
+/// One output stem per input file, made unique so replays sharing a file name
+/// cannot silently overwrite each other's outputs.
+fn unique_stems(files: &[PathBuf]) -> Vec<String> {
+    let mut used = HashSet::new();
+    let mut out = Vec::with_capacity(files.len());
+    for file in files {
+        let base = file
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "replay".into());
+        let stem = if used.insert(base.clone()) {
+            base
+        } else {
+            let mut n = 2;
+            loop {
+                let candidate = format!("{base}-{n}");
+                if used.insert(candidate.clone()) {
+                    break candidate;
+                }
+                n += 1;
+            }
+        };
+        out.push(stem);
+    }
+    out
+}
+
 fn write_outputs(
     dir: &Path,
     ex: &trackmaniare::model::Extraction,
+    stem: &str,
     timelines: bool,
     dense: bool,
     raw: bool,
 ) -> std::io::Result<()> {
-    let stem = Path::new(&ex.file)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "replay".into());
-
     if raw && !ex.body.is_empty() {
         // Everything the parser did not decode is still available here: the
         // complete decompressed body plus every skippable chunk payload.
@@ -171,12 +205,26 @@ fn write_outputs(
         fs::create_dir_all(&chunk_dir)?;
         for c in &ex.chunks {
             let Some(size) = c.size else { continue };
-            let start = c.offset + 8; // skip the chunk id and the SKIP marker
-            if start + size > ex.body.len() {
-                continue;
-            }
+            let payload: &[u8] = if c.node == "header" {
+                // Header chunk payloads live in the user-data block, not in
+                // the body.
+                match ex
+                    .header_chunk_data
+                    .iter()
+                    .find(|(id, data)| *id == c.id && data.len() == size)
+                {
+                    Some((_, data)) => data,
+                    None => continue,
+                }
+            } else {
+                let start = c.offset + 8; // skip the chunk id and the SKIP marker
+                if start + size > ex.body.len() {
+                    continue;
+                }
+                &ex.body[start..start + size]
+            };
             let name = format!("{:06}_{}_{:08X}.bin", c.offset, sanitize(&c.node), c.id);
-            write_bytes(&chunk_dir.join(name), &ex.body[start..start + size])?;
+            write_bytes(&chunk_dir.join(name), payload)?;
         }
     }
 
@@ -241,9 +289,9 @@ fn collect(path: &Path) -> std::io::Result<Vec<PathBuf>> {
             if p.is_file() {
                 let name = p
                     .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
+                    .map(|s| s.to_string_lossy().to_ascii_lowercase())
                     .unwrap_or_default();
-                if name.ends_with(".Replay.Gbx") || name.ends_with(".Ghost.Gbx") {
+                if name.ends_with(".replay.gbx") || name.ends_with(".ghost.gbx") {
                     out.push(p);
                 }
             }
@@ -264,7 +312,9 @@ fn usage() -> String {
      \n\
      USAGE:\n    TrackmaniaRE [OPTIONS] <PATH>...\n\
      \n\
-     ARGS:\n    <PATH>...    replay file(s) or a directory containing *.Replay.Gbx files\n\
+     ARGS:\n\
+     \x20   <PATH>...    replay (.Replay.Gbx) or ghost (.Ghost.Gbx) file, or a\n\
+     \x20                directory searched (non-recursively) for such files\n\
      \n\
      OPTIONS:\n\
      \x20   -s, --summary        human readable summary (default)\n\
@@ -275,7 +325,8 @@ fn usage() -> String {
      \x20   -m, --map            write the embedded map as <name>.Challenge.Gbx\n\
      \x20   -d, --dense          also write a per-tick (10 ms) input timeline CSV\n\
      \x20   -r, --raw            also dump the decompressed body and every chunk payload\n\
-     \x20   -q, --quiet          no extra output\n\
+     \x20   -q, --quiet          suppress the per-file separator\n\
+     \x20   --                   treat every remaining argument as a path\n\
      \x20   -h, --help           print this help\n"
         .to_string()
 }
@@ -283,7 +334,7 @@ fn usage() -> String {
 fn parse_args() -> Result<Options, String> {
     let mut paths = Vec::new();
     let mut out_dir: Option<PathBuf> = None;
-    let mut mode = Mode::Summary;
+    let mut mode: Option<Mode> = None;
     let mut timelines = false;
     let mut keep_map = false;
     let mut dense = false;
@@ -299,17 +350,14 @@ fn parse_args() -> Result<Options, String> {
                 print!("{}", usage());
                 std::process::exit(0);
             }
-            "-s" | "--summary" => mode = Mode::Summary,
-            "-j" | "--json" => mode = Mode::Json,
-            "--info" => mode = Mode::Info,
+            "-s" | "--summary" => mode = Some(Mode::Summary),
+            "-j" | "--json" => mode = Some(Mode::Json),
+            "--info" => mode = Some(Mode::Info),
             "-t" | "--timelines" => timelines = true,
             "-d" | "--dense" => {
                 dense = true;
                 if out_dir.is_none() {
                     out_dir = Some(PathBuf::from("trackmaniare-out"));
-                }
-                if mode == Mode::Summary {
-                    mode = Mode::Json;
                 }
             }
             "-m" | "--map" => keep_map = true,
@@ -320,9 +368,6 @@ fn parse_args() -> Result<Options, String> {
                 if out_dir.is_none() {
                     out_dir = Some(PathBuf::from("trackmaniare-out"));
                 }
-                if mode == Mode::Summary {
-                    mode = Mode::Json;
-                }
             }
             "-q" | "--quiet" => quiet = true,
             "-o" | "--out-dir" => {
@@ -331,21 +376,28 @@ fn parse_args() -> Result<Options, String> {
                     .get(i)
                     .ok_or_else(|| "--out-dir needs a value".to_string())?;
                 out_dir = Some(PathBuf::from(value));
-                if mode == Mode::Summary {
-                    mode = Mode::Json;
-                }
             }
             other if other.starts_with("--out-dir=") => {
                 out_dir = Some(PathBuf::from(&other["--out-dir=".len()..]));
-                if mode == Mode::Summary {
-                    mode = Mode::Json;
-                }
+            }
+            "--" => {
+                paths.extend(args[i + 1..].iter().map(PathBuf::from));
+                break;
             }
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
             other => paths.push(PathBuf::from(other)),
         }
         i += 1;
     }
+
+    // An explicit mode always wins; otherwise `--out-dir` (also implied by
+    // `--dense`/`--raw`) means JSON output. This makes the flag order
+    // irrelevant.
+    let mode = mode.unwrap_or(if out_dir.is_some() {
+        Mode::Json
+    } else {
+        Mode::Summary
+    });
 
     Ok(Options {
         paths,
@@ -358,6 +410,3 @@ fn parse_args() -> Result<Options, String> {
         quiet,
     })
 }
-
-#[allow(dead_code)]
-fn unused_json(_: json::Json) {}

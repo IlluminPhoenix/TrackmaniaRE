@@ -3,3 +3,15 @@
 /My Replays/
 /extracted/
 /trackmaniare-out/
+# Local scratch output (e.g. bench logs captured from a terminal).
+/warn.txt
+# Local working notes and the lockfile stay out of the repository.
+/AUDIT.md
+/FIXES.md
+/Cargo.lock
+# Staged release binaries (e.g. the Windows bench .exe).
+/dist/
+# Build outputs of the WASM bindings and the (future) web frontend.
+/crates/trackmaniare-wasm/pkg/
+/web/node_modules/
+/web/dist/

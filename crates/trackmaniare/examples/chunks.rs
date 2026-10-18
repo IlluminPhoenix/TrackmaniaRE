@@ -41,8 +41,8 @@ fn main() {
     );
     println!();
     println!(
-        "{:<10} {:<12} {:>9} {:>9}  {}",
-        "node", "chunk", "offset", "size", "disposition"
+        "{:<10} {:<12} {:>9} {:>9}  disposition",
+        "node", "chunk", "offset", "size"
     );
     for c in &ex.chunks {
         println!(
