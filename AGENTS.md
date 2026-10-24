@@ -31,7 +31,9 @@ browser against `npm run dev`, or `npm run build && npm run preview`.
   selected, a comparison, and every tab. Do this at 1440, 1024 and 390 px wide.
 - Run the captures in the background. Do not ask the user for screenshots or
   review of intermediate states.
-- Open every image and inspect it. Check for missing glyphs, clipped labels,
+- Inspect the screenshots that show the states your change touches, plus any
+  others needed to rule out a suspected regression. Treat a full sweep as a
+  shell-level or on-request check. Look for missing glyphs, clipped labels,
   horizontal overflow, blank or oversized empty panels, controls that scroll out
   of reach, and the 3D canvas rendering when WebGL is available.
 - Exercise the same states with the keyboard: open a file, select a run, set the
