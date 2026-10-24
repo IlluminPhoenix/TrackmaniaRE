@@ -155,7 +155,7 @@ fn tas_flag_writes_a_tick_script() {
     assert!(output.status.success());
 
     let script = std::fs::read_to_string(out.join("a.Replay.tas.txt")).expect("script written");
-    assert_eq!(script, "0 steer 0\n0 accel 1\n0 brake 0\n");
+    assert_eq!(script, "0 seed 25665675\n0 accel 1\n");
 }
 
 #[test]

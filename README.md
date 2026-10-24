@@ -153,9 +153,13 @@ respawn, secondary respawn, action slots, jump, free look, camera 2, and, for
 CharacterPilot runs, strafe/walk/vertical/horizontal plus mouse position.
 Pre-TM2020 control-entry inputs (TMU/TMNF/TMUF/TM2 replays) are read as well.
 `--tas` (and the web frontend's TAS panel) turns the decoded events into a TICK
-input script built from verified keywords only: `steer`, `accel`, `brake`,
-`respawn`, `srespawn`. Held respawn bits collapse into one line, and events that
-have no verified keyword are left out and counted.
+input script built from verified keywords only: `seed`, `steer`, `accel`,
+`brake`, `respawn`, `srespawn`. The script opens with `0 seed <value>` from the
+recording's validation block, starts from the neutral state (steer 0, pedals
+released, so a run that begins there writes nothing yet), and writes same-tick
+pedal lines before steering, the way TICK's own exports read. Held respawn bits
+collapse into one line, and events that have no verified keyword are left out
+and counted.
 
 **Vehicle samples.** 20 Hz states with position, rotation (angle, axis heading,
 axis pitch), speed, velocity, steering, gas, brake, RPM, gear, turbo time,
@@ -336,14 +340,14 @@ run.
 
 ## Measured on a collection
 
-Run over a 692 replay collection (654 MB, game builds from 2021 to 2025), plus
+Run over a 692 replay collection (634 MB, game builds from 2021 to 2026), plus
 one standalone `.Ghost.gbx` that the directory scan now picks up as well:
 
 | Check | Result |
 | --- | --- |
-| Replays parsed | 692 / 692, no errors, no truncated bodies |
-| Replays with a decoded input stream | 692 / 692 (530,027 input events) |
-| Replays with car samples | 691 / 692 (601,600 car states) |
+| Replays parsed | 693 / 693, no errors, no truncated bodies |
+| Replays with a decoded input stream | 693 / 693 (530,461 input events) |
+| Replays with car samples | 692 / 693 (602,050 car states) |
 | Decoded speed vs. distance covered between samples | median deviation 0.2%, 90th percentile 2.7% (respawn jumps are the only large outliers); asserted within tolerance in `cargo test` |
 | Warnings | 36 total: 16 auxiliary (media-clip) nodes, 13 chunk resyncs, 6 short input tails, 1 other |
 
@@ -354,11 +358,11 @@ of 0.0039 of full lock, exactly one steer quantisation step (1/255); the test
 bound is 0.01.
 
 Running `--tas` over the same collection writes a TICK script for all 693 ghosts,
-526,839 lines in total. Every line matches the format, times never go backwards,
-steering stays inside −127…127, and 676 respawns plus one secondary respawn come
-through. 3,911 events (0.7% of the decoded input events: horn, action slots,
+525,979 lines in total. Every line matches the format, times never go backwards,
+steering stays inside −127…127, and 675 respawns plus one secondary respawn come
+through. 3,906 events (0.7% of the decoded input events: horn, action slots,
 jump, free look, camera, mouse) are dropped because they have no verified TICK
-keyword. The CLI and the web UI report that count per ghost.
+keyword. The web UI reports that count per ghost.
 
 ## Limitations
 
@@ -383,10 +387,10 @@ keyword. The CLI and the web UI report that count per ghost.
 
 Browser frontend, on top of the parser's own limits:
 
-* The TAS script writes the verified control set only (`steer`, `accel`,
-  `brake`, `respawn`, `srespawn`). Events with no verified TICK keyword (horn,
-  action slots, jump, free look, camera, mouse) are dropped and counted in the
-  UI. `flags` words are never written.
+* The TAS script writes the verified control set only (`seed`, `steer`,
+  `accel`, `brake`, `respawn`, `srespawn`). Events with no verified TICK keyword
+  (horn, action slots, jump, free look, camera, mouse) are dropped and counted
+  in the UI. `flags` words are never written.
 * The input stream starts when the recording does, typically around −1500 ms
   during the pre-start hold, so the live display and the piano roll show a short
   negative stretch that the transport itself cannot reach (it starts at 0).

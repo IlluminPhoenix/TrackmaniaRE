@@ -38,7 +38,7 @@ await initWasm(bytes);
   const runs = parseReplayBytes(new Uint8Array(data), "tm2020-short.Replay.Gbx");
   check("short: one run", runs.length === 1, `${runs.length}`);
   const run = runs[0];
-  check("short: TAS script", run.tas === "0 steer 0\n0 accel 1\n0 brake 0\n", JSON.stringify(run.tas));
+  check("short: TAS script", run.tas === "0 seed 25665675\n0 accel 1\n", JSON.stringify(run.tas));
   check("short: dropped events counted", run.tasDropped === 7, `${run.tasDropped}`);
   check("short: input ticks", (run.inputs?.ticks ?? 0) > 0, `${run.inputs?.ticks}`);
   check("short: file name kept", run.fileName === "tm2020-short.Replay.Gbx");
@@ -67,7 +67,7 @@ await initWasm(bytes);
   check("merged: distance starts at zero", recordRun.derived?.distance[0] === 0, `${recordRun.derived?.distance[0]}`);
 
   const tasLines = (ghostRun.tas ?? "").trim().split("\n");
-  const timePattern = /^-?\d+ (steer -?\d+|accel [01]|brake [01]|respawn|srespawn)$/;
+  const timePattern = /^-?\d+ (seed \d+|steer -?\d+|accel [01]|brake [01]|respawn|srespawn)$/;
   check(
     "merged: every TAS line matches the grammar",
     tasLines.every((line) => timePattern.test(line)),

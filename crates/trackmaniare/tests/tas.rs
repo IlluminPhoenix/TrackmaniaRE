@@ -23,6 +23,7 @@ fn parse(name: &str) -> Extraction {
 /// with the vocabulary this writer claims, and returns the line count.
 fn assert_valid_script(text: &str) -> usize {
     let mut lines = 0;
+    let mut last_time: i64 = 0;
     for line in text.lines() {
         lines += 1;
         let parts: Vec<&str> = line.split(' ').collect();
@@ -31,7 +32,16 @@ fn assert_valid_script(text: &str) -> usize {
             .parse()
             .unwrap_or_else(|_| panic!("bad time: {line:?}"));
         assert!(time >= 0, "negative time: {line:?}");
+        assert!(time >= last_time, "time went backwards: {line:?}");
+        last_time = time;
         match parts[1] {
+            "seed" => {
+                assert_eq!(parts.len(), 3, "seed takes a value: {line:?}");
+                assert_eq!(time, 0, "seed must sit at time 0: {line:?}");
+                parts[2]
+                    .parse::<i64>()
+                    .unwrap_or_else(|_| panic!("bad seed: {line:?}"));
+            }
             "steer" => {
                 let v: i32 = parts[2]
                     .parse()
@@ -54,11 +64,13 @@ fn assert_valid_script(text: &str) -> usize {
 fn short_fixture_renders_the_initial_state() {
     let ex = parse("tm2020-short.Replay.Gbx");
     let script = tas_script(&ex, 0).expect("short fixture has a TM2020 input stream");
-    assert_eq!(script.text, "0 steer 0\n0 accel 1\n0 brake 0\n");
-    assert_eq!(script.lines, 3);
-    // The fixture also carries horn and CharacterPilot events (gun, action,
-    // strafe, walk, vertical, horizontal), which have no TICK keyword; they
-    // are counted, not written.
+    assert_eq!(script.text, "0 seed 25665675\n0 accel 1\n");
+    assert_eq!(script.lines, 2);
+    // The fixture's first state is neutral (steer 0, brake 0), so those lines
+    // are not written — the script's implied initial state already is. It
+    // also carries horn and CharacterPilot events (gun, action, strafe, walk,
+    // vertical, horizontal), which have no TICK keyword; they are counted,
+    // not written.
     assert_eq!(script.dropped_events, 7);
 }
 
@@ -83,15 +95,20 @@ fn merged_record_fixture_renders_a_well_formed_script() {
         panic!("fixture holds TM2020 inputs");
     };
 
-    // One `steer` line per decoded steering change, at the decoded time.
+    // One `steer` line per decoded steering change, at the decoded time; the
+    // only exception is a first state that equals the neutral 0, which the
+    // script's implied initial state already is.
     let steers: Vec<&trackmaniare::inputs::InputEvent> = events
         .iter()
         .filter(|e| matches!(e.event, Event::Steer(_)))
         .collect();
-    for e in &steers {
+    for (i, e) in steers.iter().enumerate() {
         let Event::Steer(v) = e.event else {
             unreachable!()
         };
+        if i == 0 && v == 0 {
+            continue; // neutral initial state, never written
+        }
         assert!(
             script.text.contains(&format!("{} steer {v}\n", e.time_ms)),
             "missing steer line for {e:?}"
@@ -102,7 +119,19 @@ fn merged_record_fixture_renders_a_well_formed_script() {
         .lines()
         .filter(|l| l.split(' ').nth(1) == Some("steer"))
         .count();
-    assert_eq!(steer_lines, steers.len());
+    let first_steer_is_neutral =
+        matches!(steers.first(), Some(e) if matches!(e.event, Event::Steer(0)));
+    assert_eq!(
+        steer_lines,
+        steers.len() - usize::from(first_steer_is_neutral)
+    );
+
+    // The script pins the ghost's validation seed on its first line.
+    let seed = ex.ghosts[0]
+        .validation
+        .validation_seed
+        .expect("fixture has a validation seed");
+    assert!(script.text.starts_with(&format!("0 seed {seed}\n")));
 
     // Only the verified vocabulary is ever written.
     let actions: std::collections::BTreeSet<&str> = script
@@ -112,7 +141,7 @@ fn merged_record_fixture_renders_a_well_formed_script() {
         .collect();
     assert!(
         actions.is_subset(&std::collections::BTreeSet::from([
-            "steer", "accel", "brake", "respawn", "srespawn"
+            "seed", "steer", "accel", "brake", "respawn", "srespawn"
         ])),
         "unexpected actions: {actions:?}"
     );

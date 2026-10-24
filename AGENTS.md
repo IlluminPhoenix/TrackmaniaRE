@@ -57,6 +57,6 @@ non-zero exit on any failure).
 ## Invariants
 
 - Parse failures are warnings, never fatal; skippable chunks are stepped over so a hostile or odd file cannot abort a run.
-- The TAS writer (`crates/trackmaniare/src/tas.rs`) emits verified TICK keywords only (`steer`, `accel`, `brake`, `respawn`, `srespawn`) and counts what it drops. Do not invent keywords for horn, actions or `flags`: a `flags` word is opaque to TICK's parser (any 32-bit value is accepted and nothing was mapped), and the other names were never verified.
+- The TAS writer (`crates/trackmaniare/src/tas.rs`) emits verified TICK keywords only (`seed`, `steer`, `accel`, `brake`, `respawn`, `srespawn`) and counts what it drops. `seed` opens the script as `0 seed <validation_seed>`, verified against TICK-exported input documents. Do not invent keywords for horn, actions or `flags`: a `flags` word is opaque to TICK's parser (any 32-bit value is accepted and nothing was mapped), and the other names were never verified.
 - The README Limitations section lists known quirks (mouse inputs, short input tails, non-recursive scans); read it before changing behaviour around one.
 - The README `## AI disclosure` section is human-written and agents may edit it, but keep its blunt tone: it deliberately turns away AI-hostile readers.
