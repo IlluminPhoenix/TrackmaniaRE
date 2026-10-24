@@ -107,8 +107,9 @@ impl Replay {
     /// The recorder starts a new entity list at each checkpoint, so a finished
     /// run normally has several car tracks. They are consecutive segments of
     /// the same run, in time order; reading only the first one stops the path
-    /// at the first checkpoint. Callers that want the whole run must read every
-    /// index and concatenate the timelines.
+    /// at the first checkpoint. Some exports (Trackmania.io downloads) carry a
+    /// second, sparse car track over the same span, so callers must join
+    /// non-overlapping segments in time order and ignore overlapping copies.
     pub fn vehicle_track_indices(&self, ghost: usize) -> Vec<u32> {
         let Some(record) = self.record(ghost) else {
             return Vec::new();

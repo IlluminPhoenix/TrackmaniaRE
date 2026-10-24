@@ -3,8 +3,15 @@
 //!
 //! TM2020 starts a new car entity list at every checkpoint, so a completed run
 //! normally has several `CSceneVehicleVis` tracks. They are consecutive
-//! segments of the same run, in time order; taking only the first one truncates
-//! the path (and every chart built from it) at the first checkpoint.
+//! segments of the same run and must be joined in time order; taking only the
+//! first one truncates the path (and every chart built from it) at the first
+//! checkpoint.
+//!
+//! Some exports also carry a second, sparse car track that covers the same
+//! part of the run. Trackmania.io downloads do this: the downloaded ghost has
+//! a 7-sample track next to the full 20 Hz recording. Overlapping tracks are
+//! therefore alternatives, not checkpoint segments, and the one with more
+//! samples wins.
 
 import type { Samples } from "./types.ts";
 
@@ -70,9 +77,54 @@ function readTrack(reader: SampleTrackReader, ghost: number, track: number): Sam
 }
 
 /**
- * Reads every car track of `ghost` and joins their timelines in the order the
- * caller passes them (which is record-list order, i.e. time order). Tracks
- * with no decoded samples are ignored. Returns null when none has samples.
+ * Overlap tolerated between consecutive checkpoint segments. A new segment
+ * starts at the checkpoint, usually a whole sample interval after the previous
+ * one ended; anything that overlaps by more than a few samples is a second
+ * recording, not a continuation.
+ */
+const MAX_SEGMENT_OVERLAP_MS = 250;
+
+/**
+ * Picks the tracks that belong to one run. Checkpoint segments are
+ * non-overlapping, so each becomes its own group. Tracks whose time ranges
+ * overlap belong to the same group, and only the track with the most samples
+ * survives (a sparse recording loses against the full one). Groups are
+ * returned in time order.
+ */
+function chooseSegments(parts: readonly Samples[]): Samples[] {
+  const ordered = [...parts].sort(
+    (a, b) => a.times[0] - b.times[0] || b.times.length - a.times.length,
+  );
+  const chosen: Samples[] = [];
+  let group: Samples[] = [];
+  let groupEnd = Number.NEGATIVE_INFINITY;
+
+  const flush = () => {
+    if (group.length === 0) return;
+    const best = group.reduce((a, b) => (b.times.length > a.times.length ? b : a));
+    chosen.push(best);
+    group = [];
+  };
+
+  for (const part of ordered) {
+    const start = part.times[0];
+    const end = part.times[part.times.length - 1];
+    if (group.length > 0 && start >= groupEnd - MAX_SEGMENT_OVERLAP_MS) {
+      flush();
+      groupEnd = Number.NEGATIVE_INFINITY;
+    }
+    group.push(part);
+    groupEnd = Math.max(groupEnd, end);
+  }
+  flush();
+  return chosen;
+}
+
+/**
+ * Reads every car track of `ghost`, drops alternative recordings that overlap
+ * the checkpoint segments, and joins the remaining timelines in time order.
+ * Tracks with no decoded samples are ignored. Returns null when none has
+ * samples.
  */
 export function readSamples(
   reader: SampleTrackReader,
@@ -83,23 +135,24 @@ export function readSamples(
     .map((track) => readTrack(reader, ghost, track))
     .filter((part) => part.times.length > 0);
   if (parts.length === 0) return null;
-  if (parts.length === 1) return parts[0];
+  const segments = chooseSegments(parts);
+  if (segments.length === 1) return segments[0];
   return {
-    times: concat(parts.map((part) => part.times)),
-    positions: concat(parts.map((part) => part.positions)),
-    velocities: concat(parts.map((part) => part.velocities)),
-    rotations: concat(parts.map((part) => part.rotations)),
-    speeds: concat(parts.map((part) => part.speeds)),
-    sideSpeeds: concat(parts.map((part) => part.sideSpeeds)),
-    steer: concat(parts.map((part) => part.steer)),
-    gas: concat(parts.map((part) => part.gas)),
-    brake: concat(parts.map((part) => part.brake)),
-    rpm: concat(parts.map((part) => part.rpm)),
-    gear: concat(parts.map((part) => part.gear)),
-    turbo: concat(parts.map((part) => part.turbo)),
-    isTurbo: concat(parts.map((part) => part.isTurbo)),
-    vehicleState: concat(parts.map((part) => part.vehicleState)),
-    groundMode: concat(parts.map((part) => part.groundMode)),
-    groundMaterial: concat(parts.map((part) => part.groundMaterial)),
+    times: concat(segments.map((part) => part.times)),
+    positions: concat(segments.map((part) => part.positions)),
+    velocities: concat(segments.map((part) => part.velocities)),
+    rotations: concat(segments.map((part) => part.rotations)),
+    speeds: concat(segments.map((part) => part.speeds)),
+    sideSpeeds: concat(segments.map((part) => part.sideSpeeds)),
+    steer: concat(segments.map((part) => part.steer)),
+    gas: concat(segments.map((part) => part.gas)),
+    brake: concat(segments.map((part) => part.brake)),
+    rpm: concat(segments.map((part) => part.rpm)),
+    gear: concat(segments.map((part) => part.gear)),
+    turbo: concat(segments.map((part) => part.turbo)),
+    isTurbo: concat(segments.map((part) => part.isTurbo)),
+    vehicleState: concat(segments.map((part) => part.vehicleState)),
+    groundMode: concat(segments.map((part) => part.groundMode)),
+    groundMaterial: concat(segments.map((part) => part.groundMaterial)),
   };
 }
