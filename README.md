@@ -164,11 +164,13 @@ and counted.
 **Vehicle samples.** 20 Hz states with position, rotation (angle, axis heading,
 axis pitch), speed, velocity, steering, gas, brake, RPM, gear, turbo time,
 suspension travel, per-wheel ground material, dirt/wetness and vehicle state.
-The record data holds one entity list per track (car, items, objects), and all
-of them are decoded. The sample count reported per replay is the car states; the
-rest is reported separately as `other tracks`. Record data written at replay
-level by merge/preview tooling is decoded the same way (JSON:
-`replay.record_data`; `samples.csv` rows use ghost `-1`).
+Record data is a set of entity lists (car, items, objects). The car gets a new
+list at every checkpoint, so a finished run has several; all of them are decoded
+and the web frontend joins the car lists in time order. The sample count reported
+per replay is the car states, and the rest is reported separately as
+`other tracks`. Record data written at replay level by merge/preview tooling is
+decoded the same way (JSON: `replay.record_data`; `samples.csv` rows use ghost
+`-1`).
 
 Nothing is thrown away silently: undecoded or deliberately skipped chunks are
 listed in the `chunks` inventory (`parsed` / `skipped` / `unknown`) and anything

@@ -30,13 +30,18 @@ fn fixture_parses_through_the_shim() {
         "container info is in metadata"
     );
 
-    // Samples: the car track is present and every array agrees on its length.
-    let track = replay.vehicle_track_index(0).expect("car track");
-    assert_eq!(
-        replay.track_class_id(0, track),
-        0x0A01_8000,
-        "vehicle track class id"
-    );
+    // Samples: every car track is listed and every array agrees on its length.
+    // A finished run is split into one track per checkpoint interval.
+    let tracks = replay.vehicle_track_indices(0);
+    assert!(!tracks.is_empty(), "car tracks");
+    for &index in &tracks {
+        assert_eq!(
+            replay.track_class_id(0, index as usize),
+            0x0A01_8000,
+            "vehicle track class id"
+        );
+    }
+    let track = tracks[0] as usize;
     let n = replay.track_sample_count(0, track);
     assert!(n > 50, "only {n} samples");
     assert_eq!(replay.track_times_ms(0, track).len(), n);

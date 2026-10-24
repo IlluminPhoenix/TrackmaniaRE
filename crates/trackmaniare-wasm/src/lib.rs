@@ -102,13 +102,25 @@ impl Replay {
             .is_some_and(|record| record.vehicle_sample_count() > 0)
     }
 
-    /// Index of the car track, if `ghost` has a record with one.
-    pub fn vehicle_track_index(&self, ghost: usize) -> Option<usize> {
-        let record = self.record(ghost)?;
+    /// Indices of every car track in `ghost`'s record data.
+    ///
+    /// The recorder starts a new entity list at each checkpoint, so a finished
+    /// run normally has several car tracks. They are consecutive segments of
+    /// the same run, in time order; reading only the first one stops the path
+    /// at the first checkpoint. Callers that want the whole run must read every
+    /// index and concatenate the timelines.
+    pub fn vehicle_track_indices(&self, ghost: usize) -> Vec<u32> {
+        let Some(record) = self.record(ghost) else {
+            return Vec::new();
+        };
         record
             .lists
             .iter()
-            .position(|l| l.class_id == Some(CLASS_CSCENE_VEHICLE_VIS))
+            .enumerate()
+            .filter_map(|(index, list)| {
+                (list.class_id == Some(CLASS_CSCENE_VEHICLE_VIS)).then_some(index as u32)
+            })
+            .collect()
     }
 
     /// Class id of track `track`; the car is `0x0A018000`.
@@ -407,5 +419,61 @@ fn effective_ticks(ticks: u32, truncated: bool, events: &[InputEvent]) -> u32 {
         events.last().map(|e| e.tick.saturating_add(1)).unwrap_or(0)
     } else {
         ticks
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use trackmaniare::model::GhostInfo;
+
+    fn car_list() -> EntListElem {
+        EntListElem {
+            type_index: 2,
+            u01: 0,
+            u02: 0,
+            u03: 0,
+            u04: 0,
+            class_id: Some(CLASS_CSCENE_VEHICLE_VIS),
+            samples: Vec::new(),
+            extra_samples: 0,
+        }
+    }
+
+    fn run_with_lists(lists: Vec<EntListElem>) -> Replay {
+        let record = RecordData {
+            lists,
+            ..Default::default()
+        };
+        Replay {
+            ex: Extraction {
+                ghosts: vec![GhostInfo {
+                    record_data: Some(record),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn vehicle_track_indices_lists_every_checkpoint_segment() {
+        let mut item = car_list();
+        item.type_index = 0;
+        item.class_id = Some(0x2D00_1000);
+        let mut object = car_list();
+        object.type_index = 1;
+        object.class_id = Some(0x032C_B000);
+
+        let replay = run_with_lists(vec![item, car_list(), object, car_list(), car_list()]);
+        assert_eq!(replay.vehicle_track_indices(0), vec![1u32, 3, 4]);
+    }
+
+    #[test]
+    fn missing_record_has_no_vehicle_tracks() {
+        let replay = Replay {
+            ex: Extraction::default(),
+        };
+        assert!(replay.vehicle_track_indices(0).is_empty());
     }
 }

@@ -3,7 +3,8 @@
 
 import init, { Replay } from "./wasm/trackmaniare_wasm.js";
 import { deriveRun } from "./derive.ts";
-import type { Checkpoint, InputEventLite, Inputs, MapRef, RunData, Samples } from "./types";
+import { readSamples } from "./samples.ts";
+import type { Checkpoint, InputEventLite, Inputs, MapRef, RunData } from "./types";
 
 let initPromise: Promise<void> | null = null;
 
@@ -109,29 +110,6 @@ function readInputs(replay: Replay, ghost: number): Inputs | null {
   };
 }
 
-function readSamples(replay: Replay, ghost: number, track: number): Samples | null {
-  const times = replay.track_times_ms(ghost, track);
-  if (times.length === 0) return null;
-  return {
-    times,
-    positions: replay.track_positions(ghost, track),
-    velocities: replay.track_velocities(ghost, track),
-    rotations: replay.track_rotations(ghost, track),
-    speeds: replay.track_speeds_mps(ghost, track),
-    sideSpeeds: replay.track_side_speeds(ghost, track),
-    steer: replay.track_steer(ghost, track),
-    gas: replay.track_gas(ghost, track),
-    brake: replay.track_brake(ghost, track),
-    rpm: replay.track_rpms(ghost, track),
-    gear: replay.track_gears(ghost, track),
-    turbo: replay.track_turbo_times(ghost, track),
-    isTurbo: replay.track_is_turbo(ghost, track),
-    vehicleState: replay.track_vehicle_states(ghost, track),
-    groundMode: replay.track_ground_modes(ghost, track),
-    groundMaterial: replay.track_ground_materials(ghost, track),
-  };
-}
-
 /**
  * Parses a `.Replay.Gbx` / `.Ghost.Gbx` and returns one entry per ghost.
  * Throws when the container cannot be read at all; every other problem is a
@@ -161,8 +139,8 @@ export function parseReplayBytes(bytes: Uint8Array, fileName: string): RunData[]
     const ghosts = meta.ghosts ?? [];
     for (let g = 0; g < ghosts.length; g++) {
       const ghostMeta = ghosts[g] ?? {};
-      const track = replay.vehicle_track_index(g);
-      const samples = track === undefined ? null : readSamples(replay, g, track);
+      const tracks = Array.from(replay.vehicle_track_indices(g));
+      const samples = readSamples(replay, g, tracks);
       const inputs = readInputs(replay, g);
       const tas = inputs?.format === "tm2020-bitpacked" ? (replay.tas_inputs(g) ?? null) : null;
       const checkpoints: Checkpoint[] = (ghostMeta.checkpoints ?? []).map((cp) => ({
@@ -213,8 +191,8 @@ export function parseReplayBytes(bytes: Uint8Array, fileName: string): RunData[]
     // Give it its own entry so the path is usable and never mis-attributed.
     if (replay.has_replay_record()) {
       const holder = ghosts.length;
-      const track = replay.vehicle_track_index(holder);
-      const samples = track === undefined ? null : readSamples(replay, holder, track);
+      const tracks = Array.from(replay.vehicle_track_indices(holder));
+      const samples = readSamples(replay, holder, tracks);
       if (samples) {
         const run: RunData = {
           id: `${fileName}#merged`,
