@@ -7,6 +7,9 @@
 //! `tm2020-merged-record` is a 7.6 second TAS/preview export whose samples
 //! live in a record data node at replay level (`0x0911F000`) instead of in
 //! the ghost.
+//!
+//! The fixtures are sanitized: the nickname, zone, account id and wall-clock
+//! timestamps are placeholders, so the test data does not identify a player.
 
 use trackmaniare::{model::GhostInputs, parse_replay};
 
@@ -61,6 +64,10 @@ fn replay_metadata_is_extracted() {
     assert_eq!(attr("exever").as_deref(), Some("3.3.0"));
     assert_eq!(attr("title").as_deref(), Some("TMStadium"));
     assert_eq!(ex.replay.author_nickname.as_deref(), Some("TestDriver0001"));
+    assert_eq!(
+        ex.replay.author_zone.as_deref(),
+        Some("World|Europe|Testlan|Test|TestTownXYZW")
+    );
     assert!(
         ex.replay.embedded_map_size.unwrap() > 1000,
         "embedded map present"
@@ -77,7 +84,8 @@ fn ghost_metadata_and_samples_are_extracted() {
     assert_eq!(ghost.race_time_ms, Some(2590));
     assert_eq!(ghost.respawns, Some(0));
     assert_eq!(ghost.checkpoints.len(), 1);
-    assert!(ghost.walltime_start.is_some() && ghost.walltime_end.is_some());
+    assert_eq!(ghost.walltime_start, Some(1_577_836_800));
+    assert_eq!(ghost.walltime_end, Some(1_577_836_803));
 
     let record = ghost.record_data.as_ref().expect("record data");
     // The entity list holds several tracks (car, items, objects) and all of

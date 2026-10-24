@@ -11,6 +11,7 @@ pub mod reader;
 pub mod record;
 pub mod replay;
 pub mod tabular;
+pub mod tas;
 
 use crate::error::Result;
 use crate::gbx::Gbx;

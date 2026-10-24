@@ -1,0 +1,39 @@
+{
+  "name": "trackmaniare-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Client-side Trackmania 2020 replay inspector: the TrackmaniaRE extractor compiled to WebAssembly.",
+  "engines": {
+    "node": ">=22.22.2"
+  },
+  "scripts": {
+    "wasm": "node scripts/wasm-build.mjs",
+    "predev": "node scripts/node-guard.cjs",
+    "dev": "vite",
+    "prebuild": "node scripts/node-guard.cjs",
+    "build": "tsc --noEmit && vite build",
+    "prepreview": "node scripts/node-guard.cjs",
+    "preview": "vite preview --port 4173",
+    "precheck": "node scripts/node-guard.cjs",
+    "check": "tsc --noEmit",
+    "pretest": "node scripts/node-guard.cjs",
+    "test": "vitest run",
+    "presmoke": "node scripts/node-guard.cjs",
+    "smoke": "node scripts/smoke.mjs",
+    "shots": "node scripts/shots.mjs"
+  },
+  "dependencies": {
+    "three": "^0.186.1",
+    "uplot": "^1.6.32"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/three": "^0.186.0",
+    "jsdom": "^30.1.3",
+    "playwright": "^1.64.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  }
+}

@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>TrackmaniaRE &mdash; replay inspector</title>
+    <meta
+      name="description"
+      content="Read Trackmania 2020 replays and ghosts in your browser: inputs, TAS export, map, stats, 3D path and run comparison. Files never leave your device."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230b1016'/%3E%3Cpath d='M14 22h36M32 22v28' stroke='%234cc9f0' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to workspace</a>
+
+    <header class="app-header">
+      <div class="app-title">
+        <h1>TrackmaniaRE</h1>
+        <span class="app-kicker">replay inspector</span>
+      </div>
+      <div class="header-actions">
+        <button
+          class="btn btn-ghost runs-toggle"
+          id="runs-toggle"
+          type="button"
+          aria-controls="runs-drawer"
+          aria-expanded="false"
+        >
+          Runs <span class="count-badge" id="runs-count">0</span>
+        </button>
+        <button class="btn btn-primary" id="open-files" type="button" aria-label="Open files" title="Open files">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 7.5h6l2 2h10v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19Z"></path>
+            <path d="M3 7.5V5a1.5 1.5 0 0 1 1.5-1.5H9L11 5.5"></path>
+          </svg>
+          <span class="btn-label">Open files</span>
+        </button>
+        <button class="btn btn-icon btn-ghost" id="shortcuts-open" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M9.4 9a2.7 2.7 0 1 1 3.7 2.5c-.8.35-1.1.9-1.1 1.8"></path>
+            <path d="M12 17.2h.01"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <input id="file-input" type="file" multiple accept=".gbx,.Gbx" hidden />
+
+    <main class="app-main">
+      <aside class="sidebar" id="runs-drawer" aria-label="Runs and recent files">
+        <div class="sidebar-head">
+          <h2>Runs</h2>
+          <button class="btn btn-icon btn-ghost sidebar-close" id="runs-close" type="button" aria-label="Close runs panel" title="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+              <path d="M6 6l12 12"></path>
+              <path d="M18 6 6 18"></path>
+            </svg>
+          </button>
+        </div>
+        <div class="sidebar-scroll">
+          <div id="panel-runs"></div>
+        </div>
+      </aside>
+
+      <div class="workspace" id="workspace">
+        <nav class="tabs" role="tablist" aria-label="Views">
+          <button class="tab" type="button" role="tab" id="tabbutton-overview" aria-controls="tab-overview" aria-selected="true">
+            Overview
+          </button>
+          <button class="tab" type="button" role="tab" id="tabbutton-3d" aria-controls="tab-3d" aria-selected="false">
+            3D path
+          </button>
+          <button class="tab" type="button" role="tab" id="tabbutton-inputs" aria-controls="tab-inputs" aria-selected="false">
+            Inputs
+          </button>
+        </nav>
+
+        <div class="compare-bar" id="compare-bar" hidden></div>
+
+        <section class="workspace-empty" id="workspace-empty">
+          <div class="empty-drop">
+            <p class="empty-kicker">Trackmania 2020</p>
+            <h2>Open a replay or ghost</h2>
+            <p class="empty-copy">
+              Drop a <code>.Replay.Gbx</code> or <code>.Ghost.Gbx</code> anywhere, or choose files.
+              The parser runs in this tab. Nothing is uploaded.
+            </p>
+            <div class="empty-actions">
+              <button class="btn btn-primary" id="empty-open" type="button">Open files</button>
+              <span class="muted small">Multiple files are fine. Drag and drop works too.</span>
+            </div>
+            <div class="empty-meta">
+              <span class="badge badge-neutral">inputs</span>
+              <span class="badge badge-neutral">splits</span>
+              <span class="badge badge-neutral">TAS script</span>
+              <span class="badge badge-neutral">3D path</span>
+              <span class="badge badge-neutral">map download</span>
+            </div>
+          </div>
+        </section>
+
+        <div class="workspace-panels" id="workspace-panels" hidden>
+          <section class="tab-page" id="tab-overview" role="tabpanel" aria-labelledby="tabbutton-overview">
+            <div class="overview-grid">
+              <section class="panel">
+                <div class="panel-head"><h2>Run details</h2></div>
+                <div class="panel-body" id="panel-overview"></div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head"><h2>Splits</h2></div>
+                <div class="panel-body" id="panel-splits"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="tab-page" id="tab-3d" role="tabpanel" aria-labelledby="tabbutton-3d" hidden>
+            <div class="path-grid">
+              <section class="panel">
+                <div class="panel-head"><h2>Path</h2></div>
+                <div class="panel-body" id="panel-path"></div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head"><h2>Live input</h2></div>
+                <div class="panel-body" id="panel-live"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="tab-page" id="tab-inputs" role="tabpanel" aria-labelledby="tabbutton-inputs" hidden>
+            <section class="panel">
+              <div class="panel-head"><h2>Input piano roll</h2></div>
+              <div class="panel-body" id="panel-inputs"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head"><h2>Speed and delta</h2></div>
+              <div class="panel-body" id="panel-speed"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head"><h2>TAS input script</h2></div>
+              <div class="panel-body" id="panel-tas"></div>
+            </section>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="transport" id="panel-transport" aria-label="Playback"></footer>
+
+    <div class="toasts" id="status" role="status" aria-live="polite"></div>
+    <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+
+    <dialog class="shortcuts-dialog" id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+      <div class="dialog-head">
+        <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+        <button class="btn btn-icon btn-ghost" id="shortcuts-close" type="button" aria-label="Close shortcuts" title="Close">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12"></path>
+            <path d="M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+      <dl class="shortcut-list">
+        <div><dt><kbd>Space</kbd></dt><dd>Play or pause</dd></div>
+        <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Step 0.1 seconds</dd></div>
+        <div><dt><kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd></dt><dd>Step 1 second</dd></div>
+        <div><dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>Jump to the start or the recorded end</dd></div>
+        <div><dt><kbd>F</kbd></dt><dd>Fullscreen the 3D path</dd></div>
+        <div><dt><kbd>Esc</kbd></dt><dd>Close a dialog, the runs drawer or fullscreen</dd></div>
+        <div><dt><kbd>?</kbd></dt><dd>Open this shortcut list</dd></div>
+      </dl>
+      <p class="shortcut-note">Shortcuts are ignored while a control or text field has keyboard focus.</p>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

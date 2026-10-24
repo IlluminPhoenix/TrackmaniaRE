@@ -142,6 +142,23 @@ fn raw_dump_contains_real_header_chunk_payloads() {
 }
 
 #[test]
+fn tas_flag_writes_a_tick_script() {
+    let dir = temp_dir("tas");
+    let replay = copy_fixture(&dir, "a.Replay.Gbx");
+    let out = dir.join("out");
+    let output = run([
+        std::ffi::OsStr::new("-T"),
+        std::ffi::OsStr::new("-o"),
+        out.as_os_str(),
+        replay.as_os_str(),
+    ]);
+    assert!(output.status.success());
+
+    let script = std::fs::read_to_string(out.join("a.Replay.tas.txt")).expect("script written");
+    assert_eq!(script, "0 steer 0\n0 accel 1\n0 brake 0\n");
+}
+
+#[test]
 fn double_dash_allows_paths_starting_with_a_dash() {
     let dir = temp_dir("dashdash");
     copy_fixture(&dir, "-weird.Replay.Gbx");

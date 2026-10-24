@@ -79,14 +79,30 @@ impl Replay {
     }
 
     // ---- vehicle samples (20 Hz record data) --------------------------------
+    //
+    // Every accessor below takes a *record holder* index: `0..ghost_count()`
+    // are the ghosts, and `ghost_count()` is the replay-level merged record
+    // that merge tooling writes instead of one record per ghost (the CLI
+    // reports its samples as ghost -1). `has_replay_record` says whether that
+    // holder exists.
 
-    /// Number of entity tracks in ghost `ghost`'s record data (the car, plus
-    /// items and objects).
+    /// Number of entity tracks in `ghost`'s record data (the car, plus items
+    /// and objects). `ghost == ghost_count()` reads the replay-level record.
     pub fn track_count(&self, ghost: usize) -> usize {
         self.record(ghost).map(|r| r.lists.len()).unwrap_or(0)
     }
 
-    /// Index of the car track, if the ghost has one.
+    /// Whether the replay carries a merged record of its own, reachable at
+    /// record holder index `ghost_count()`.
+    pub fn has_replay_record(&self) -> bool {
+        self.ex
+            .replay
+            .record_data
+            .as_ref()
+            .is_some_and(|record| record.vehicle_sample_count() > 0)
+    }
+
+    /// Index of the car track, if `ghost` has a record with one.
     pub fn vehicle_track_index(&self, ghost: usize) -> Option<usize> {
         let record = self.record(ghost)?;
         record
@@ -180,6 +196,71 @@ impl Replay {
         out
     }
 
+    /// Sample velocity as x, y, z triples in metres per second.
+    pub fn track_velocities(&self, ghost: usize, track: usize) -> Vec<f32> {
+        let mut out = Vec::new();
+        self.each_vehicle(ghost, track, |_, v| out.extend_from_slice(&v.velocity));
+        out
+    }
+
+    /// Sideways speed in metres per second.
+    pub fn track_side_speeds(&self, ghost: usize, track: usize) -> Vec<f32> {
+        let mut out = Vec::new();
+        self.each_vehicle(ghost, track, |_, v| out.push(v.side_speed));
+        out
+    }
+
+    /// Engine RPM as recorded, 0 .. 255.
+    pub fn track_rpms(&self, ghost: usize, track: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.each_vehicle(ghost, track, |_, v| out.push(v.rpm));
+        out
+    }
+
+    /// Gear, -0.25 (reverse) .. 1 (last gear).
+    pub fn track_gears(&self, ghost: usize, track: usize) -> Vec<f32> {
+        let mut out = Vec::new();
+        self.each_vehicle(ghost, track, |_, v| out.push(v.gear));
+        out
+    }
+
+    /// Turbo time counter as recorded, 0 .. 255.
+    pub fn track_turbo_times(&self, ghost: usize, track: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.each_vehicle(ghost, track, |_, v| out.push(v.turbo_time));
+        out
+    }
+
+    /// Whether turbo is active at the sample (0 or 1).
+    pub fn track_is_turbo(&self, ghost: usize, track: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.each_vehicle(ghost, track, |_, v| out.push(v.is_turbo));
+        out
+    }
+
+    /// Vehicle state flags as recorded.
+    pub fn track_vehicle_states(&self, ghost: usize, track: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.each_vehicle(ghost, track, |_, v| out.push(v.vehicle_state));
+        out
+    }
+
+    /// Ground mode per sample: 0 airborne, 1 low speed, 3 driving on ground.
+    pub fn track_ground_modes(&self, ghost: usize, track: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.each_vehicle(ghost, track, |_, v| out.push(v.ground_mode));
+        out
+    }
+
+    /// Per-wheel ground material ids, four per sample (0 = no contact).
+    pub fn track_ground_materials(&self, ghost: usize, track: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.each_vehicle(ghost, track, |_, v| {
+            out.extend_from_slice(&v.ground_material)
+        });
+        out
+    }
+
     // ---- inputs (TM2020 bit-packed, 100 Hz) ---------------------------------
 
     /// Number of 10 ms ticks in ghost `ghost`'s input stream — the last decoded
@@ -237,6 +318,22 @@ impl Replay {
         tabular::samples_csv(&self.ex)
     }
 
+    /// Ghost `ghost`'s inputs as a TICK TAS script (`<time_ms> <action>
+    /// <value>`), ready to paste into TICK. `None` when the ghost has no
+    /// TM2020 input stream.
+    pub fn tas_inputs(&self, ghost: usize) -> Option<String> {
+        trackmaniare::tas::tas_script(&self.ex, ghost).map(|s| s.text)
+    }
+
+    /// How many events `tas_inputs` had to leave out because TICK has no
+    /// verified keyword for them (horn, action slots, jump, free look,
+    /// camera, mouse).
+    pub fn tas_dropped_events(&self, ghost: usize) -> usize {
+        trackmaniare::tas::tas_script(&self.ex, ghost)
+            .map(|s| s.dropped_events)
+            .unwrap_or(0)
+    }
+
     // ---- internals ----------------------------------------------------------
 
     fn track(&self, ghost: usize, track: usize) -> Option<&EntListElem> {
@@ -244,6 +341,12 @@ impl Replay {
     }
 
     fn record(&self, ghost: usize) -> Option<&RecordData> {
+        // Merge tooling sometimes writes one record for the whole replay
+        // instead of one per ghost; it lives at the pseudo index
+        // `ghost_count()` (the CLI reports its samples as ghost -1).
+        if ghost == self.ex.ghosts.len() {
+            return self.ex.replay.record_data.as_ref();
+        }
         self.ex.ghosts.get(ghost)?.record_data.as_ref()
     }
 

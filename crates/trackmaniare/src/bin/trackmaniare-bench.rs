@@ -257,7 +257,8 @@ struct Summary {
     parse_ms: f64,
     wall_ms: f64,
     per_file: PerFile,
-    throughput_mib_s: f64,
+    parse_throughput_mib_s: f64,
+    end_to_end_throughput_mib_s: f64,
 }
 
 impl Summary {
@@ -326,7 +327,11 @@ impl Summary {
             };
         }
         if steady_ms > 0.0 {
-            s.throughput_mib_s = steady_bytes as f64 / (1024.0 * 1024.0) / (steady_ms / 1000.0);
+            s.parse_throughput_mib_s =
+                steady_bytes as f64 / (1024.0 * 1024.0) / (steady_ms / 1000.0);
+        }
+        if wall_ms > 0.0 {
+            s.end_to_end_throughput_mib_s = s.bytes as f64 / (1024.0 * 1024.0) / (wall_ms / 1000.0);
         }
         s
     }
@@ -611,7 +616,7 @@ fn print_report(opts: &Options, results: &[FileResult], s: &Summary) {
     );
     if s.files > 0 {
         println!(
-            "per file   min {}, median {}, p95 {}, p99 {}, max {}",
+            "per file   parse min {}, median {}, p95 {}, p99 {}, max {}",
             fmt_ms(s.per_file.min_ms),
             fmt_ms(s.per_file.median_ms),
             fmt_ms(s.per_file.p95_ms),
@@ -619,8 +624,12 @@ fn print_report(opts: &Options, results: &[FileResult], s: &Summary) {
             fmt_ms(s.per_file.max_ms)
         );
         println!(
-            "speed      {:.1} MiB/s (file bytes over the sum of per-file medians)",
-            s.throughput_mib_s
+            "speed      parse {:.1} MiB/s (file bytes over the sum of per-file parse medians)",
+            s.parse_throughput_mib_s
+        );
+        println!(
+            "           end to end {:.1} MiB/s (file bytes over wall time)",
+            s.end_to_end_throughput_mib_s
         );
     }
 
@@ -769,7 +778,14 @@ fn write_json_report(
         p.set("max", Json::Float(s.per_file.max_ms));
         p
     });
-    summary.set("throughput_mib_s", Json::Float(s.throughput_mib_s));
+    summary.set(
+        "parse_throughput_mib_s",
+        Json::Float(s.parse_throughput_mib_s),
+    );
+    summary.set(
+        "end_to_end_throughput_mib_s",
+        Json::Float(s.end_to_end_throughput_mib_s),
+    );
     root.set("summary", summary);
 
     let files: Vec<Json> = results
@@ -1019,7 +1035,7 @@ fn usage() -> String {
      \x20                files or directories, searched recursively\n\
      \n\
      OPTIONS:\n\
-     \x20   -r, --repeat N      parse every file N times and report per-file medians (default 1)\n\
+     \x20   -r, --repeat N      parse every file N times and report per-file parse medians (default 1)\n\
      \x20   -j, --json FILE     also write the full report as JSON\n\
      \x20   -c, --csv FILE      also write per-file results as CSV\n\
      \x20   -v, --verbose       print a line per file while the run proceeds\n\
@@ -1160,5 +1176,28 @@ mod tests {
         assert_eq!(group(1_000), "1,000");
         assert_eq!(group(2_255), "2,255");
         assert_eq!(group(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn speeds_distinguish_parse_time_from_wall_time() {
+        // A synthetic file whose read dominates: 1 MiB, 300 ms read,
+        // 100 ms parse, in a 400 ms run. Parsing alone runs at 10 MiB/s,
+        // the whole run at 2.5 MiB/s. Both rates must show up separately.
+        let mut r = FileResult::new(Path::new("a.Replay.Gbx"));
+        r.size = 1024 * 1024;
+        r.read_ms = 300.0;
+        r.parse_ms = vec![100.0];
+        let s = Summary::from(&[r], 400.0);
+
+        assert!(
+            (s.parse_throughput_mib_s - 10.0).abs() < 1e-9,
+            "1 MiB in 100 ms is 10 MiB/s of parsing, got {}",
+            s.parse_throughput_mib_s
+        );
+        assert!(
+            (s.end_to_end_throughput_mib_s - 2.5).abs() < 1e-9,
+            "1 MiB in a 400 ms run is 2.5 MiB/s end to end, got {}",
+            s.end_to_end_throughput_mib_s
+        );
     }
 }

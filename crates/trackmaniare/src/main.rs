@@ -21,6 +21,7 @@ struct Options {
     timelines: bool,
     keep_map: bool,
     dense: bool,
+    tas: bool,
     raw: bool,
     quiet: bool,
 }
@@ -118,6 +119,7 @@ fn main() -> ExitCode {
                                     stem,
                                     opts.timelines,
                                     opts.dense,
+                                    opts.tas,
                                     opts.raw,
                                 ) {
                                     eprintln!("error: writing outputs for {}: {e}", file.display());
@@ -195,6 +197,7 @@ fn write_outputs(
     stem: &str,
     timelines: bool,
     dense: bool,
+    tas: bool,
     raw: bool,
 ) -> std::io::Result<()> {
     if raw && !ex.body.is_empty() {
@@ -246,6 +249,22 @@ fn write_outputs(
         &dir.join(format!("{stem}.samples.csv")),
         &tabular::samples_csv(ex),
     )?;
+
+    if tas {
+        // One script per ghost that has a TM2020 input stream; the first one
+        // gets the plain name so the common single-ghost case stays obvious.
+        for (n, gi) in trackmaniare::tas::ghosts_with_tas(ex).iter().enumerate() {
+            let Some(script) = trackmaniare::tas::tas_script(ex, *gi) else {
+                continue;
+            };
+            let name = if n == 0 {
+                format!("{stem}.tas.txt")
+            } else {
+                format!("{stem}.ghost{gi}.tas.txt")
+            };
+            write_file(&dir.join(name), &script.text)?;
+        }
+    }
 
     if let Some(map) = &ex.embedded_map {
         let map_name = ex
@@ -320,10 +339,12 @@ fn usage() -> String {
      \x20   -s, --summary        human readable summary (default)\n\
      \x20   -j, --json           write JSON per replay (stdout, or into --out-dir)\n\
      \x20       --info            container + chunk inventory only\n\
-     \x20   -o, --out-dir DIR    write per-replay outputs (JSON, inputs CSV, samples CSV, map)\n\
+     \x20   -o, --out-dir DIR    write per-replay outputs (JSON, inputs CSV, samples CSV, map,\n\
+     \x20                        TAS script with -T)\n\
      \x20   -t, --timelines      include full input/sample timelines in the JSON\n\
      \x20   -m, --map            write the embedded map as <name>.Challenge.Gbx\n\
      \x20   -d, --dense          also write a per-tick (10 ms) input timeline CSV\n\
+     \x20   -T, --tas            also write a TICK TAS input script per ghost\n\
      \x20   -r, --raw            also dump the decompressed body and every chunk payload\n\
      \x20   -q, --quiet          suppress the per-file separator\n\
      \x20   --                   treat every remaining argument as a path\n\
@@ -338,6 +359,7 @@ fn parse_args() -> Result<Options, String> {
     let mut timelines = false;
     let mut keep_map = false;
     let mut dense = false;
+    let mut tas = false;
     let mut raw = false;
     let mut quiet = false;
 
@@ -356,6 +378,12 @@ fn parse_args() -> Result<Options, String> {
             "-t" | "--timelines" => timelines = true,
             "-d" | "--dense" => {
                 dense = true;
+                if out_dir.is_none() {
+                    out_dir = Some(PathBuf::from("trackmaniare-out"));
+                }
+            }
+            "-T" | "--tas" => {
+                tas = true;
                 if out_dir.is_none() {
                     out_dir = Some(PathBuf::from("trackmaniare-out"));
                 }
@@ -406,6 +434,7 @@ fn parse_args() -> Result<Options, String> {
         timelines,
         keep_map,
         dense,
+        tas,
         raw,
         quiet,
     })
